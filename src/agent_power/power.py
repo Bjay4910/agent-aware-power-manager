@@ -70,19 +70,21 @@ def parse_pmset_batt(output: str) -> BatteryStatus:
     text = output or ""
     lower = text.lower()
 
-    if "'battery power'" in lower or "drawing from 'battery" in lower:
-        on_ac = False
-    elif "'ac power'" in lower or "drawing from 'ac" in lower or "'ups power'" in lower:
-        on_ac = True
-    else:
-        # Default conservatively to AC if no battery line indicates battery draw
-        on_ac = "discharging" not in lower
-
     match = _BATT_PERCENT_RE.search(text)
     percent: int | None = None
     if match:
         parsed_pct = int(match.group(1))
         percent = max(0, min(100, parsed_pct))
+
+    if percent is None:
+        # No battery device/percentage line present (e.g. desktop Mac or restricted IOKit)
+        on_ac = True
+    elif "'battery power'" in lower or "drawing from 'battery" in lower:
+        on_ac = False
+    elif "'ac power'" in lower or "drawing from 'ac" in lower or "'ups power'" in lower:
+        on_ac = True
+    else:
+        on_ac = "discharging" not in lower
 
     charging_state = "unknown"
     for candidate in ("finishing charge", "discharging", "charging", "charged", "no estimate"):
