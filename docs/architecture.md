@@ -1,0 +1,13 @@
+# Architecture & Safety Design
+
+`agent-aware-power-manager` is split into small, single-responsibility modules under `src/agent_power/`:
+
+1. **`presence_reader.py`** — Reads `~/.agent-room/presence/<agent>.json` (or `$AGENT_ROOM_HOME/presence/<agent>.json`). Extracts only `agent`, `status`, `task`, `pid`, and `updated_at`. Any `"working"` record whose `updated_at` is more than 120 seconds old is treated as stale (`"idle"`). Malformed or unreadable files are ignored.
+2. **`policy.py`** — Pure function `decide(state: PolicyState) -> Action`. Deterministic, side-effect-free, and tested with a `FakeClock` across every boundary (`25%` battery, `10%` critical battery, `20s` grace period, `7200s` max hold, plugged-in-only mode, and `Sleep now` override).
+3. **`power.py`** — Wraps `/usr/bin/pmset -g batt`, `/usr/bin/pmset -g`, `/usr/bin/pmset sleepnow`, and `sudo -n /usr/bin/pmset -a disablesleep 1|0`. Never prompts for a password (`sudo -n` with `stdin=DEVNULL`). Honors `AGENT_POWER_DRY_RUN=1`.
+4. **`engine.py`** — Runs every 5 seconds, tying together `presence_reader`, `power`, and `policy`. Writes `~/.agent-power/state.json` atomically with a heartbeat timestamp and a 50-event plain-word log. Releases any active hold on normal exit or `SIGTERM`/`SIGINT`.
+5. **`watchdog.py`** — Runs every 60 seconds from `launchd`. If `disablesleep` is active and `~/.agent-power/state.json` has a heartbeat older than 90 seconds (or is missing), releases the hold and logs the recovery to `~/.agent-power/watchdog.log`.
+6. **`menubar.py`** — `rumps` status bar app displaying four states (`awake`, `normal`, `off`, `problem`), mode selection, `"Only while plugged in"` toggle, `"Sleep now"`, `"What happened"` (last 5 events), `"Using the battery"` submenu, and `"Quit"`.
+7. **`battery_viewer.py`** — Samples CPU twice `0.7s` apart with `psutil` and lists the current user's own processes above `5%` CPU in plain words (what it is, working folder, listening ports, and parent process). Offers a confirmed Quit action (`SIGTERM`, then `SIGKILL` after 5 seconds). Never touches system processes, other users' processes, itself, or the room.
+8. **`runaway_guard.py`** — Runs once a minute via `launchd` (or `agent-power guard-run`). Default behavior is **notify-only** (`osascript` notification + `~/.local/state/agent-power/guard.log`). Acts only when all six criteria hold simultaneously for 10 consecutive minutes (`>=80%` of one core in every check).
+9. **`cli.py`** — Provides the `agent-power` CLI entry point (`status`, `hold`, `release`, `sleep-now`, `mode <auto|hold|off>`, `guard-run`, `guard-status`).
