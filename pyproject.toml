@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-aware-power-manager"
+version = "0.1.0"
+description = "macOS menu-bar power manager that keeps your Mac awake with the lid closed while AI agents in a multi-agent room are working."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Barnabas James Gyampoh" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "psutil>=5.9.0",
+    "rumps>=0.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+agent-power = "agent_power.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
