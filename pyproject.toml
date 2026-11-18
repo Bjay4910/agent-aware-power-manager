@@ -7,7 +7,7 @@ name = "agent-aware-power-manager"
 version = "0.1.0"
 description = "macOS menu-bar power manager that keeps your Mac awake with the lid closed while AI agents in a multi-agent room are working."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 authors = [
     { name = "Barnabas James Gyampoh" }
 ]

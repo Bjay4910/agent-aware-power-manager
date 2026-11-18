@@ -110,6 +110,13 @@ Review and run the installer yourself from your terminal:
 
 `scripts/uninstall.sh` releases any active sleep hold, unloads and deletes the three LaunchAgents, removes `/etc/sudoers.d/agent-power` (with confirmation), and cleans up `~/.agent-power`, `~/.config/agent-power`, and `~/.local/state/agent-power`.
 
+## Verification
+
+- **Lid-closed test:** I closed the laptop lid for about 5 minutes with an agent presence file reported as working, while the Mac was plugged in. A timestamp logged every 5 seconds produced 60 entries with no gaps over 8 seconds. Repeated once with the same result (two runs total).
+- After each run the hold was released (`pmset -g` showed SleepDisabled 0).
+- **Test method:** a script that writes a "working" presence file and a timestamp every 5 seconds. The log shows the Mac stayed awake; the lid being closed was done by hand, not detected by the script.
+- **Not yet tested:** longer durations, battery-mode behavior, or other Mac models.
+
 ## Credits
 
 Inspired by Agent Awake by a7ussein.
