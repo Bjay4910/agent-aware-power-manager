@@ -4,9 +4,28 @@ A macOS menu-bar power manager that keeps your Mac awake with the lid closed whi
 
 ## The Three Rules
 
-1. **Lid closed while an agent works stays awake:** When any agent in the room reports `"status": "working"`, the engine acquires a clamshell sleep hold (`pmset -a disablesleep 1`) so closing the lid does not interrupt active work.
-2. **Agents finish and it sleeps normally within about 20 seconds:** Once the last working agent transitions to `"idle"` (or its heartbeat goes stale after 120 seconds), the engine waits a 20-second grace period for follow-up tasks and then releases the hold (`pmset -a disablesleep 0`).
+1. **Lid closed while an agent works stays awake:** In **Automatic** mode, when any agent in the room reports `"status": "working"` — including **Claude Code** and **Antigravity CLI (`agy`)** turns via lifecycle hooks, plus background commands started during the turn that outlive turn end — the engine acquires a clamshell sleep hold (`pmset -a disablesleep 1`) so closing the lid does not interrupt active work.
+2. **Agents finish and it sleeps normally within about 20 seconds:** Once the last working agent (and any background commands it started during the turn) finishes or goes stale after 120 seconds, the engine waits a 20-second grace period for follow-up tasks and then releases the hold (`pmset -a disablesleep 0`).
 3. **Sleep now always works:** Clicking **Sleep now** in the menu bar (or running `agent-power sleep-now`) overrides every mode and active agent, releases the sleep hold first, and puts the Mac to sleep immediately (`pmset sleepnow`).
+
+## Menu Bar Icon & Notch Tip
+
+- The menu bar uses compact emoji-only icons: `⚡` (awake), `🌙` (normal), `⏸` (off), and `⚠️` (problem).
+- Click the icon to see the **`Status:`** line at the top of the menu (for example `Status: Awake` or `Status: Normal`) in plain words.
+- **MacBook notch tip:** On notched MacBooks, if the menu bar is crowded the icon can get hidden behind the notch. Free up menu bar space (quit or hide unused menu bar icons) or switch Display scaling to **More Space** in System Settings.
+
+## Claude Code & Antigravity CLI Lifecycle Hooks
+
+To have **Automatic** mode track **Claude Code** and **Antigravity CLI (`agy`)** turns automatically:
+
+```bash
+agent-power install-hooks --print   # Preview the exact JSON snippets (makes no changes)
+agent-power install-hooks --apply   # Back up existing configs and merge hooks safely
+agent-power uninstall-hooks         # Back up configs and remove only agent-power hooks
+```
+
+- While a turn is running, a lightweight per-session heartbeat refreshes `~/.agent-room/presence/<session>.json` every 30 seconds (no prompt text is ever read or logged).
+- If the agent ends its turn (`Stop`) while a background command started during that turn is still running as a descendant of the agent process, the hold stays active until those background commands exit (still bounded by the 2-hour cap and all battery safety rails). Older pre-turn children like MCP servers or language servers are ignored.
 
 ## Architecture
 
@@ -72,17 +91,21 @@ flowchart LR
    - `/usr/bin/pmset -a disablesleep 0`
    - `/usr/bin/pmset -a disablesleep 1`
    No other `pmset` flags or commands are allowed by the sudoers rule.
+4. **Detached/non-child background processes are not tracked:** At turn end (`Stop`), the hook only keeps the hold alive for background commands that are descendants (children/grandchildren) of the agent process and started during that turn. A background process the agent triggers that is **not** a child of the agent process (for example, a job handed off to an external daemon or `launchd` before `Stop`) is not tracked.
 
 ## CLI Usage (`agent-power`)
 
 ```bash
-agent-power status               # Show hold state, battery, active agents, and last 5 events
-agent-power hold                 # Enable 'Hold 2 hours' mode
-agent-power release              # Release any active sleep hold immediately
-agent-power sleep-now            # Release hold and put the Mac to sleep immediately
-agent-power mode auto            # Set mode to Automatic (auto | hold | off)
-agent-power guard-run            # Run the runaway script guard check once
-agent-power guard-status         # Inspect tracked background scripts and guard log
+agent-power status                  # Show hold state, battery, active agents, and last 5 events
+agent-power hold                    # Enable 'Hold 2 hours' mode
+agent-power release                 # Release any active sleep hold immediately
+agent-power sleep-now               # Release hold and put the Mac to sleep immediately
+agent-power mode auto               # Set mode to Automatic (auto | hold | off)
+agent-power install-hooks --print   # Print Claude Code & Antigravity hook JSON snippets
+agent-power install-hooks --apply   # Backup and merge lifecycle hooks into agent configs
+agent-power uninstall-hooks         # Backup and remove lifecycle hooks from agent configs
+agent-power guard-run               # Run the runaway script guard check once
+agent-power guard-status            # Inspect tracked background scripts and guard log
 ```
 
 Set `AGENT_POWER_DRY_RUN=1` to test any command without root or real `pmset` changes (prints the `pmset` commands instead of running them).
@@ -112,10 +135,14 @@ Review and run the installer yourself from your terminal:
 
 ## Verification
 
-- **Lid-closed test:** I closed the laptop lid for about 5 minutes with an agent presence file reported as working, while the Mac was plugged in. A timestamp logged every 5 seconds produced 60 entries with no gaps over 8 seconds. Repeated once with the same result (two runs total).
-- After each run the hold was released (`pmset -g` showed SleepDisabled 0).
-- **Test method:** a script that writes a "working" presence file and a timestamp every 5 seconds. The log shows the Mac stayed awake; the lid being closed was done by hand, not detected by the script.
-- **Not yet tested:** longer durations, battery-mode behavior, or other Mac models.
+- **Original lid-closed test:** I closed the laptop lid for about 5 minutes with an agent presence file reported as working, while the Mac was plugged in. A timestamp logged every 5 seconds produced 60 entries with no gaps over 8 seconds. Repeated once with the same result (two runs total). After each run the hold was released (`pmset -g` showed `SleepDisabled 0`).
+- **Real background-command E2E tests (plugged in, lid open):** Verified on both Antigravity CLI (`agy`) and Claude Code (`claude -p` in stream-json mode) with a 65-second background command outliving `Stop`: the session presence file stayed `"working"` (`waiting_for_children: true`) and `pmset -g` stayed `SleepDisabled 1` until the command exited, then removed the file and returned to `SleepDisabled 0` after the 20-second grace period.
+- **Not yet tested:**
+  - Unplugged battery-mode behavior in a real run
+  - Lid-closed test with the new hooks and background-command tracking code
+  - Full 2-hour cap in real time (verified with short timeouts in automated tests)
+  - The Antigravity desktop IDE (tested with Antigravity CLI `agy` only)
+  - Interactive Claude Code TUI (the real Claude Code E2E test used `claude -p`)
 
 ## Credits
 
