@@ -106,4 +106,9 @@ def test_cli_commands_in_dry_run(
 
 
 def test_menubar_icon_states_defined() -> None:
-    assert set(ICON_STATE_TITLES.keys()) == {"awake", "normal", "off", "problem"}
+    assert ICON_STATE_TITLES == {
+        "awake": "⚡",
+        "normal": "🌙",
+        "off": "⏸",
+        "problem": "⚠️",
+    }

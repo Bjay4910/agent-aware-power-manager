@@ -10,11 +10,16 @@ Supported subcommands:
 - guard-status
 - menubar
 - watchdog
+- hook-event
+- hook-heartbeat
+- install-hooks (--print | --apply)
+- uninstall-hooks
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 from typing import Sequence
@@ -24,6 +29,15 @@ from agent_power.engine import (
     _atomic_write_json,
     get_state_dir,
     load_state_file,
+)
+from agent_power.hooks import (
+    DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    DEFAULT_HEARTBEAT_MAX_SECONDS,
+    apply_install_hooks,
+    apply_uninstall_hooks,
+    format_install_hooks_print,
+    handle_hook_event,
+    run_heartbeat_loop,
 )
 from agent_power.policy import Mode
 from agent_power.power import set_disable_sleep
@@ -58,6 +72,51 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("guard-status", help="Show runaway guard status, tracked scripts, and recent log")
     subparsers.add_parser("menubar", help="Launch the macOS menu-bar application")
     subparsers.add_parser("watchdog", help="Run the 60-second watchdog check once")
+
+    subparsers.add_parser("hook-event", help="Handle a Claude Code or Antigravity lifecycle hook event from stdin")
+
+    hb_parser = subparsers.add_parser("hook-heartbeat", help="Run detached per-session presence heartbeat loop")
+    hb_parser.add_argument("--file", required=True, help="Path to session presence JSON file")
+    hb_parser.add_argument("--agent-pid", type=int, default=0, help="Agent PID to watch for liveness")
+    hb_parser.add_argument(
+        "--interval",
+        type=float,
+        default=DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+        help="Heartbeat refresh interval in seconds (default 30)",
+    )
+    hb_parser.add_argument(
+        "--max-seconds",
+        type=float,
+        default=DEFAULT_HEARTBEAT_MAX_SECONDS,
+        help="Maximum heartbeat lifetime in seconds (default 7200)",
+    )
+
+    install_parser = subparsers.add_parser(
+        "install-hooks",
+        help="Print (--print) or merge (--apply) lifecycle hooks for Claude Code and Antigravity",
+    )
+    install_group = install_parser.add_mutually_exclusive_group(required=False)
+    install_group.add_argument(
+        "--print",
+        dest="print_only",
+        action="store_true",
+        help="Print exact JSON blocks for ~/.claude/settings.json and ~/.gemini/config/hooks.json (default)",
+    )
+    install_group.add_argument(
+        "--apply",
+        dest="apply_changes",
+        action="store_true",
+        help="Backup existing config files and merge agent-power hooks idempotently",
+    )
+    install_parser.add_argument("--claude-settings", type=Path, default=None, help="Override path to Claude settings.json")
+    install_parser.add_argument("--agy-hooks", type=Path, default=None, help="Override path to Antigravity hooks.json")
+
+    uninstall_parser = subparsers.add_parser(
+        "uninstall-hooks",
+        help="Backup and remove agent-power lifecycle hooks from Claude Code and Antigravity configs",
+    )
+    uninstall_parser.add_argument("--claude-settings", type=Path, default=None, help="Override path to Claude settings.json")
+    uninstall_parser.add_argument("--agy-hooks", type=Path, default=None, help="Override path to Antigravity hooks.json")
 
     return parser
 
@@ -190,6 +249,55 @@ def main(
         from agent_power.menubar import run_menubar_app
 
         run_menubar_app()
+        return 0
+
+    if cmd == "hook-event":
+        try:
+            raw_stdin = sys.stdin.read()
+        except Exception:
+            raw_stdin = ""
+        resp = handle_hook_event(raw_stdin)
+        print(json.dumps(resp))
+        return 0
+
+    if cmd == "hook-heartbeat":
+        return run_heartbeat_loop(
+            Path(args.file).expanduser(),
+            agent_pid=int(args.agent_pid),
+            interval_seconds=float(args.interval),
+            max_seconds=float(args.max_seconds),
+        )
+
+    if cmd == "install-hooks":
+        if args.apply_changes:
+            c_bak, a_bak = apply_install_hooks(
+                claude_settings_path=args.claude_settings,
+                agy_hooks_path=args.agy_hooks,
+            )
+            print("Merged agent-power lifecycle hooks into Claude Code and Antigravity configs.")
+            if c_bak:
+                print(f"  Claude backup:      {c_bak}")
+            if a_bak:
+                print(f"  Antigravity backup: {a_bak}")
+            return 0
+        print(
+            format_install_hooks_print(
+                claude_settings_path=args.claude_settings,
+                agy_hooks_path=args.agy_hooks,
+            )
+        )
+        return 0
+
+    if cmd == "uninstall-hooks":
+        c_bak, a_bak = apply_uninstall_hooks(
+            claude_settings_path=args.claude_settings,
+            agy_hooks_path=args.agy_hooks,
+        )
+        print("Removed agent-power lifecycle hooks from Claude Code and Antigravity configs.")
+        if c_bak:
+            print(f"  Claude backup:      {c_bak}")
+        if a_bak:
+            print(f"  Antigravity backup: {a_bak}")
         return 0
 
     eng = engine or PowerEngine(state_dir=state_dir)

@@ -27,10 +27,10 @@ from agent_power.engine import LOOP_INTERVAL_SECONDS, EngineTickResult, PowerEng
 from agent_power.policy import Mode
 
 ICON_STATE_TITLES: dict[str, str] = {
-    "awake": "⚡ Awake",
-    "normal": "🌙 Normal",
-    "off": "⏸ Off",
-    "problem": "⚠️ Problem",
+    "awake": "⚡",
+    "normal": "🌙",
+    "off": "⏸",
+    "problem": "⚠️",
 }
 
 
@@ -45,6 +45,9 @@ class AgentPowerMenuBarApp(rumps.App):  # type: ignore[misc]
         )
         self.engine = engine or PowerEngine()
         self.engine.install_signal_handlers()
+
+        # Status item (disabled, shows state in words)
+        self.status_item = rumps.MenuItem("Status: Normal", callback=None)
 
         # Mode items
         self.mode_auto_item = rumps.MenuItem("Automatic", callback=self._on_mode_auto)
@@ -72,6 +75,8 @@ class AgentPowerMenuBarApp(rumps.App):  # type: ignore[misc]
         self.quit_item = rumps.MenuItem("Quit", callback=self._on_quit)
 
         self.menu = [
+            self.status_item,
+            None,
             self.mode_auto_item,
             self.mode_hold_item,
             self.mode_off_item,
@@ -91,6 +96,7 @@ class AgentPowerMenuBarApp(rumps.App):  # type: ignore[misc]
 
     def _sync_ui_from_engine(self, tick: EngineTickResult) -> None:
         self.title = ICON_STATE_TITLES.get(tick.icon_state, ICON_STATE_TITLES["normal"])
+        self.status_item.title = f"Status: {tick.icon_state.capitalize()}"
 
         self.mode_auto_item.state = int(tick.mode is Mode.AUTOMATIC)
         self.mode_hold_item.state = int(tick.mode is Mode.HOLD_2H)
