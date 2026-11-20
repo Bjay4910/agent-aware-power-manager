@@ -127,6 +127,7 @@ class PowerEngine:
         self.last_working_at: float | None = None
         self._hold_started_mono: float | None = None
         self._last_working_mono: float | None = None
+        self._unreadable_battery_streak: int = 0
         self.menubar_icon_visible: bool | None = None
         self.menubar_icon_checked_at: float | None = None
         self.problem: str | None = None
@@ -163,6 +164,7 @@ class PowerEngine:
                 critical_battery_sleep=self.settings.critical_battery_sleep,
                 max_hold_seconds=self.settings.max_hold_seconds,
                 idle_grace_seconds=self.settings.idle_grace_seconds,
+                unreadable_battery_release_ticks=self.settings.unreadable_battery_release_ticks,
             )
         if isinstance(existing.get("hold_active"), bool):
             self.hold_active = existing["hold_active"]
@@ -234,6 +236,7 @@ class PowerEngine:
             critical_battery_sleep=self.settings.critical_battery_sleep,
             max_hold_seconds=self.settings.max_hold_seconds,
             idle_grace_seconds=self.settings.idle_grace_seconds,
+            unreadable_battery_release_ticks=self.settings.unreadable_battery_release_ticks,
         )
         state_word = "enabled" if enabled else "disabled"
         self.record_event(f"Only while plugged in {state_word}")
@@ -257,6 +260,10 @@ class PowerEngine:
             self._last_working_mono = now_mono
 
         battery = self._battery_reader()
+        if not battery.on_ac_power and battery.percent is None:
+            self._unreadable_battery_streak += 1
+        else:
+            self._unreadable_battery_streak = 0
         agent_tuples = tuple((a.agent, a.task) for a in active)
 
         sleep_req = self._sleep_now_requested
@@ -290,6 +297,7 @@ class PowerEngine:
             mode=self.mode,
             sleep_now_requested=sleep_req,
             settings=self.settings,
+            unreadable_battery_streak=self._unreadable_battery_streak,
         )
 
         decision = decide(policy_state)

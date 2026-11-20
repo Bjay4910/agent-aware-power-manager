@@ -88,6 +88,7 @@ class PolicySettings:
     critical_battery_sleep: int = 10
     max_hold_seconds: float = DEFAULT_MAX_HOLD_SECONDS  # 2 hours
     idle_grace_seconds: float = 20.0
+    unreadable_battery_release_ticks: int = 3
 
     @classmethod
     def from_env(cls) -> PolicySettings:
@@ -112,6 +113,7 @@ class PolicyState:
     now: float | None = None
     hold_started_at: float | None = None
     last_working_at: float | None = None
+    unreadable_battery_streak: int | None = None
 
     def effective_any_working(self) -> bool:
         """Return True if any_agent_working is True or active_agents is non-empty."""
@@ -220,6 +222,34 @@ def decide(state: PolicyState) -> Action:
             "Mode is Off; normal macOS sleep is active.",
         )
 
+    # 3b. Unreadable battery while not confirmed on AC power -> fail safe with flap hysteresis on active holds.
+    if not state.on_ac_power and state.battery_percent is None:
+        if not state.hold_active:
+            return Action(
+                ActionType.NOOP,
+                "Blocked new hold: battery status is unreadable (failing safe).",
+            )
+        if hold_seconds >= settings.max_hold_seconds:
+            if settings.max_hold_seconds < 60.0:
+                limit_label = f"{settings.max_hold_seconds:g} seconds"
+            else:
+                max_mins = int(round(settings.max_hold_seconds / 60.0))
+                limit_label = f"{max_mins} minutes"
+            return Action(
+                ActionType.RELEASE,
+                f"Released sleep hold: maximum hold time ({limit_label}) reached.",
+            )
+        streak = state.unreadable_battery_streak
+        if streak is not None and streak < settings.unreadable_battery_release_ticks:
+            return Action(
+                ActionType.NOOP,
+                f"Battery status unreadable ({streak}/{settings.unreadable_battery_release_ticks}); keeping active hold.",
+            )
+        return Action(
+            ActionType.RELEASE,
+            "Released sleep hold: battery status is unreadable (failing safe).",
+        )
+
     # 4. "Only while plugged in" (default ON): on battery, behave like a normal laptop.
     if not state.on_ac_power and settings.only_while_plugged_in:
         if state.hold_active:
@@ -230,18 +260,6 @@ def decide(state: PolicyState) -> Action:
         return Action(
             ActionType.NOOP,
             "Running on battery with 'Only while plugged in' enabled; normal sleep is active.",
-        )
-
-    # 4b. Unreadable battery while not confirmed on AC power -> fail safe.
-    if not state.on_ac_power and state.battery_percent is None:
-        if state.hold_active:
-            return Action(
-                ActionType.RELEASE,
-                "Released sleep hold: battery status is unreadable (failing safe).",
-            )
-        return Action(
-            ActionType.NOOP,
-            "Blocked new hold: battery status is unreadable (failing safe).",
         )
 
     # 5. Maximum hold duration (default 2 hours = 7200 seconds).

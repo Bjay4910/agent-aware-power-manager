@@ -253,3 +253,117 @@ def test_unreadable_pmset_nonzero_exit_and_exception_fail_safe() -> None:
             )
         )
         assert res_active.kind is ActionType.RELEASE
+
+
+def test_get_battery_status_retries_once_on_transient_flap() -> None:
+    """A single unreadable/failing pmset -g batt call is retried once and recovers if the retry succeeds."""
+    responses = [
+        subprocess.CompletedProcess(["/usr/bin/pmset", "-g", "batt"], 1, stdout="", stderr="transient error"),
+        subprocess.CompletedProcess(
+            ["/usr/bin/pmset", "-g", "batt"],
+            0,
+            stdout=_pmset_batt_fixture(on_ac=True, percent=88),
+            stderr="",
+        ),
+    ]
+    calls = 0
+
+    def flapping_runner(cmd: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        return responses[calls - 1]
+
+    batt = get_battery_status(runner=flapping_runner)
+    assert calls == 2
+    assert batt.on_ac_power is True
+    assert batt.percent == 88
+
+    # Two consecutive unreadable reads return unreadable after exactly 2 calls (initial + 1 retry)
+    calls_fail = 0
+
+    def always_empty_runner(cmd: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        nonlocal calls_fail
+        calls_fail += 1
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    batt_fail = get_battery_status(runner=always_empty_runner)
+    assert calls_fail == 2
+    assert batt_fail.on_ac_power is False
+    assert batt_fail.percent is None
+
+
+def test_engine_unreadable_battery_flap_hysteresis_and_reset(tmp_path: Path) -> None:
+    """1-2 unreadable ticks keep an active hold, 3 consecutive release, a good read resets counter, and new holds refuse immediately."""
+    clock = FakeClock(initial=1_760_000_000.0)
+    room_dir = tmp_path / "room"
+    pdir = room_dir / "presence"
+    pdir.mkdir(parents=True)
+
+    def write_working() -> None:
+        from datetime import datetime, timezone
+
+        (pdir / "claude.json").write_text(
+            f'{{"agent":"claude","status":"working","task":"build","pid":999,"updated_at":"{datetime.fromtimestamp(clock.now, tz=timezone.utc).isoformat()}"}}',
+            encoding="utf-8",
+        )
+
+    good_ac = _pmset_batt_fixture(on_ac=True, percent=90)
+    current_stdout = [""]  # Start unreadable
+
+    eng = PowerEngine(
+        state_dir=tmp_path / "state",
+        room_home=room_dir,
+        clock=clock,
+        battery_reader=lambda: get_battery_status(runner=_runner_returning(current_stdout[0])),
+        dry_run=True,
+    )
+
+    # 1. New hold is refused IMMEDIATELY on first unreadable tick
+    write_working()
+    t_new_refused = eng.step()
+    assert t_new_refused.action.kind is ActionType.NOOP
+    assert t_new_refused.hold_active is False
+
+    # 2. Acquire active hold on good AC reading
+    current_stdout[0] = good_ac
+    clock.advance(5.0)
+    write_working()
+    t_hold = eng.step()
+    assert t_hold.action.kind is ActionType.HOLD
+    assert t_hold.hold_active is True
+
+    # 3. Single unreadable flap keeps the active hold (even with default only_while_plugged_in=True)
+    current_stdout[0] = ""
+    clock.advance(5.0)
+    write_working()
+    t_flap1 = eng.step()
+    assert t_flap1.action.kind is ActionType.NOOP
+    assert t_flap1.hold_active is True
+
+    # 4. Second consecutive unreadable tick still keeps active hold
+    clock.advance(5.0)
+    write_working()
+    t_flap2 = eng.step()
+    assert t_flap2.action.kind is ActionType.NOOP
+    assert t_flap2.hold_active is True
+
+    # 5. Successful read resets the unreadable counter
+    current_stdout[0] = good_ac
+    clock.advance(5.0)
+    write_working()
+    t_ok = eng.step()
+    assert t_ok.hold_active is True
+
+    # 6. After reset, 2 unreadable ticks still keep hold, and the 3rd consecutive releases it
+    current_stdout[0] = ""
+    clock.advance(5.0)
+    write_working()
+    assert eng.step().hold_active is True  # streak 1
+    clock.advance(5.0)
+    write_working()
+    assert eng.step().hold_active is True  # streak 2
+    clock.advance(5.0)
+    write_working()
+    t_release = eng.step()  # streak 3 -> RELEASE!
+    assert t_release.action.kind is ActionType.RELEASE
+    assert t_release.hold_active is False

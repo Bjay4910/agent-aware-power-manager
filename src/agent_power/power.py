@@ -108,9 +108,12 @@ def parse_pmset_batt(output: str) -> BatteryStatus:
     )
 
 
-def get_battery_status(runner: CommandRunner | None = None) -> BatteryStatus:
-    """Read current battery status using `/usr/bin/pmset -g batt`."""
-    run = runner or _default_runner
+def _is_battery_unreadable(status: BatteryStatus) -> bool:
+    """Return True when neither AC power nor a battery percentage could be read."""
+    return (not status.on_ac_power) and (status.percent is None)
+
+
+def _read_battery_once(run: CommandRunner) -> BatteryStatus:
     try:
         proc = run([PMSET_BIN, "-g", "batt"])
     except (OSError, subprocess.SubprocessError) as exc:
@@ -129,6 +132,15 @@ def get_battery_status(runner: CommandRunner | None = None) -> BatteryStatus:
             raw_output=detail,
         )
     return parse_pmset_batt(proc.stdout)
+
+
+def get_battery_status(runner: CommandRunner | None = None) -> BatteryStatus:
+    """Read current battery status using `/usr/bin/pmset -g batt` (retrying once on unreadable output)."""
+    run = runner or _default_runner
+    first = _read_battery_once(run)
+    if not _is_battery_unreadable(first):
+        return first
+    return _read_battery_once(run)
 
 
 def parse_disablesleep(output: str) -> bool:
