@@ -93,6 +93,7 @@ flowchart LR
    - `/usr/bin/pmset -a disablesleep 1`
    No other `pmset` flags or commands are allowed by the sudoers rule.
 4. **Detached/non-child background processes are not tracked:** At turn end (`Stop`), the hook only keeps the hold alive for background commands that are descendants (children/grandchildren) of the agent process and started during that turn. A background process the agent triggers that is **not** a child of the agent process (for example, a job handed off to an external daemon or `launchd` before `Stop`) is not tracked.
+5. **Headless `agy -p` mode:** A headless `agy -p` run registered no working agent over about 17 minutes of idle log, so hooks do not fire (or were not detected) in headless `-p` mode (not investigated further). Only interactive sessions and the desktop IDE were verified.
 
 ## CLI Usage (`agent-power`)
 
@@ -152,11 +153,13 @@ python3 -m venv .venv
 - **Lid-closed with lifecycle hooks (plugged in, one run):** On my MacBook Pro, a real Claude Code session started a 4-minute background command (a loop writing a timestamp every 5 seconds to a log) and ended its turn. I closed the lid; the log had 48 entries with no gap over 8 seconds, and `SleepDisabled` was `0` afterwards. One run only.
 - **Lid-closed with lifecycle hooks (on battery, one run):** On my MacBook Pro, unplugged with **"Only while plugged in"** unticked (battery at 62% at the end), the same 4-minute timestamp-loop test produced 48 entries with no gaps, and `SleepDisabled` was back to `0` about a minute after the command finished. One run only (no battery drain numbers or longer durations verified).
 - **Antigravity desktop IDE hooks (Nov 20, 2026, ~3:37–3:38 AM, one run):** Verified on my MacBook Pro that the Antigravity desktop IDE fired the same lifecycle hooks: an `agy-<id>.json` presence file appeared, `SleepDisabled` became `1`, and it released back to `0` afterward. Desktop IDE chats are not captured by the room (`antigravity:outside-brain`; belongs to `multi-agent-memory-hub`).
+- **Short-cap real-hardware run (Nov 20, 2026, one run):** On a MacBook Pro on AC power at 90% with real `pmset` and `AGENT_POWER_MAX_HOLD_SECONDS` set to `180` in the menubar LaunchAgent plist, an interactive `agy --mode auto` turn running `sleep 30` x8 acquired a hold at 12:01:38 (`SleepDisabled=1`, one working agent), released at the cap at 12:04:42 (184s) while the agent was still working (`latch=True`, `"Maximum hold time (3 minutes) reached; not re-acquiring hold"`), kept `SleepDisabled=0` and `latch=True` for about 90s across a mid-latch menubar process restart at 12:05:06 while the agent was still working, cleared the latch after agents ended (12:06:19; `latch=False` at 12:06:24), and re-acquired the hold on a fresh turn at 12:09:44 before releasing at 12:10:31 (about 21s after the turn ended, grace period). The plist was reverted to the default cap afterwards (`agent-power doctor`: 0 FAIL). See [docs/real-hardware-run-2026-11-20.md](docs/real-hardware-run-2026-11-20.md). A headless `agy -p` run registered no working agent over about 17 minutes of idle log, so hooks do not fire (or were not detected) in headless `-p` mode (not investigated further); only interactive sessions and the desktop IDE were verified.
 - **Automated fixture & fake-clock tests (not real battery drain or real-time clock shifts):** Battery thresholds (`<=10%` forced sleep, below 25% new holds refused, 25–100% holds allowed, AC vs battery, and fail-safe on unreadable `pmset -g batt` where new holds refuse immediately while active holds tolerate transient flaps with 1 retry and release after 3 consecutive unreadable checks), clock edge cases (DST spring-forward/fall-back, forward and backwards wall-clock jumps, midnight crossings, 2-hour monotonic cap that stays latched across restarts until all working presence ends, and 120s stale presence expiry), and `AGENT_POWER_MAX_HOLD_SECONDS` (default 7200s, clamped to <=7200s) are covered in `tests/`.
 - **Not yet tested:**
-  - Full 2-hour cap in real time (verified with fake clocks and `AGENT_POWER_MAX_HOLD_SECONDS` in automated tests)
+  - A full 7200s cap in real time
+  - Real battery drain below 25%
   - Other Mac models
-  - Real hardware battery drain below 25% and real-time DST transitions (covered with fixtures and fake clocks only)
+  - Real DST transitions
 
 ## Credits
 
