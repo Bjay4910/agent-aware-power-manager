@@ -118,6 +118,8 @@ class PowerEngine:
         self.hold_active: bool = False
         self.hold_started_at: float | None = None
         self.last_working_at: float | None = None
+        self.menubar_icon_visible: bool | None = None
+        self.menubar_icon_checked_at: float | None = None
         self.problem: str | None = None
         self.events: list[str] = []
         self._sleep_now_requested: bool = False
@@ -159,6 +161,23 @@ class PowerEngine:
             self.hold_started_at = float(existing["hold_started_at"])
         if isinstance(existing.get("last_working_at"), (int, float)):
             self.last_working_at = float(existing["last_working_at"])
+        if isinstance(existing.get("menubar_icon_visible"), bool):
+            self.menubar_icon_visible = existing["menubar_icon_visible"]
+        raw_icon_checked = existing.get("menubar_icon_checked_at")
+        if isinstance(raw_icon_checked, (int, float)) and not isinstance(raw_icon_checked, bool):
+            self.menubar_icon_checked_at = float(raw_icon_checked)
+
+    def set_icon_visibility(
+        self,
+        visible: bool | None,
+        *,
+        checked_at: float | None = None,
+    ) -> None:
+        """Record the menu bar icon visibility state reported by the menu bar app."""
+        self.menubar_icon_visible = visible
+        self.menubar_icon_checked_at = (
+            float(checked_at) if checked_at is not None else self._clock()
+        )
 
     def record_event(self, text: str) -> None:
         """Append a plain-word event to the rolling 50-item log without consecutive duplicates."""
@@ -324,6 +343,8 @@ class PowerEngine:
             "mode_label": self.mode.label,
             "only_while_plugged_in": self.settings.only_while_plugged_in,
             "icon_state": self.icon_state,
+            "menubar_icon_visible": self.menubar_icon_visible,
+            "menubar_icon_checked_at": self.menubar_icon_checked_at,
             "problem": self.problem,
             "last_action": decision.kind.value,
             "last_reason": decision.reason,
