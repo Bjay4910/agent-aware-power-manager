@@ -13,6 +13,7 @@ A macOS menu-bar power manager that keeps your Mac awake with the lid closed whi
 - The menu bar uses compact emoji-only icons: `⚡` (awake), `🌙` (normal), `⏸` (off), and `⚠️` (problem).
 - Click the icon to see the **`Status:`** line at the top of the menu (for example `Status: Awake` or `Status: Normal`) in plain words.
 - **MacBook notch tip:** On notched MacBooks, if the menu bar is crowded the icon can get hidden behind the notch. Free up menu bar space (quit or hide unused menu bar icons) or switch Display scaling to **More Space** in System Settings.
+- **Hidden-icon warning:** The menu bar app checks whether its status item is visible (`NSStatusItem` occlusion state) and skips checks while the screen is locked, asleep, or in full-screen. If the icon stays hidden across 3 consecutive checks spanning at least 30 seconds, it sends a one-time macOS notification (re-armed only after the icon becomes visible again) and reports the state to `agent-power doctor`.
 
 ## Claude Code & Antigravity CLI Lifecycle Hooks
 
@@ -96,6 +97,7 @@ flowchart LR
 ## CLI Usage (`agent-power`)
 
 ```bash
+agent-power doctor                  # Read-only health check (LaunchAgents, sudoers, hooks, presence, icon)
 agent-power status                  # Show hold state, battery, active agents, and last 5 events
 agent-power hold                    # Enable 'Hold 2 hours' mode
 agent-power release                 # Release any active sleep hold immediately
@@ -132,6 +134,16 @@ Review and run the installer yourself from your terminal:
 ```
 
 `scripts/uninstall.sh` releases any active sleep hold, unloads and deletes the three LaunchAgents, removes `/etc/sudoers.d/agent-power` (with confirmation), and cleans up `~/.agent-power`, `~/.config/agent-power`, and `~/.local/state/agent-power`.
+
+## Running the tests
+
+Create a virtual environment, install the package with its `dev` extra, and run `pytest`:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/python -m pytest -q
+```
 
 ## Verification
 
