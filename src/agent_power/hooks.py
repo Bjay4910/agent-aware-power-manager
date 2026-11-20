@@ -38,6 +38,7 @@ import sys
 import time
 from typing import Any, Callable, Iterable, Iterator
 
+from agent_power.policy import resolve_max_hold_seconds
 from agent_power.presence_reader import STALE_AFTER_SECONDS, get_presence_dir
 
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS: float = 30.0
@@ -935,10 +936,11 @@ def handle_hook_event(
     agent_pid: int | None = None,
     spawn_heartbeat: bool = True,
     heartbeat_interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
-    heartbeat_max_seconds: float = DEFAULT_HEARTBEAT_MAX_SECONDS,
+    heartbeat_max_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Process a single hook event safely. Always returns `{}` for stdout."""
     try:
+        effective_max_seconds = resolve_max_hold_seconds(heartbeat_max_seconds)
         parsed = parse_hook_stdin(raw_stdin)
         if parsed is None or parsed.action == "ignore":
             return {}
@@ -1021,7 +1023,7 @@ def handle_hook_event(
                 ):
                     max_deadline_epoch = float(raw_deadline)
                 else:
-                    max_deadline_epoch = turn_started_at + heartbeat_max_seconds
+                    max_deadline_epoch = turn_started_at + effective_max_seconds
 
                 remaining_max = max(0.0, max_deadline_epoch - now_epoch)
                 if remaining_max <= 0.0:
@@ -1130,7 +1132,7 @@ def handle_hook_event(
                     )
                 )
                 turn_started_at = now_epoch
-                max_deadline_epoch = now_epoch + heartbeat_max_seconds
+                max_deadline_epoch = now_epoch + effective_max_seconds
 
                 # Carry over a previous turn's still-draining child ONLY when the prior record
                 # belongs to the same agent PID, is fresh, and its 2-hour cap has not expired.
@@ -1144,7 +1146,7 @@ def handle_hook_event(
                     prev_dl = (
                         float(raw_prev_deadline)
                         if has_prev_deadline
-                        else float(raw_prev_start) + heartbeat_max_seconds
+                        else float(raw_prev_start) + effective_max_seconds
                     )
                     if prev_dl > now_epoch:
                         prev_waiting = _sanitize_pid_set(existing.get("waiting_for_pids"))
@@ -1162,7 +1164,7 @@ def handle_hook_event(
                         if still_prev:
                             baseline_set -= set(still_prev)
                             turn_started_at = min(float(raw_prev_start), now_epoch)
-                            max_deadline_epoch = min(prev_dl, now_epoch + heartbeat_max_seconds)
+                            max_deadline_epoch = min(prev_dl, now_epoch + effective_max_seconds)
                             carry_waiting_pids = still_prev
                             carry_waiting_starts = still_prev_starts
                 turn_baseline_pids = sorted(baseline_set)
@@ -1172,7 +1174,7 @@ def handle_hook_event(
                 max_deadline_epoch = (
                     float(raw_prev_deadline)
                     if has_prev_deadline
-                    else turn_started_at + heartbeat_max_seconds
+                    else turn_started_at + effective_max_seconds
                 )
                 carry_waiting_pids = sorted(_sanitize_pid_set(existing.get("carry_waiting_pids")))
                 carry_waiting_starts = {

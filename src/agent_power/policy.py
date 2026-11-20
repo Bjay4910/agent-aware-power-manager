@@ -7,7 +7,31 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+import math
+import os
 from typing import Sequence
+
+DEFAULT_MAX_HOLD_SECONDS: float = 7200.0
+MAX_HOLD_SECONDS_ENV: str = "AGENT_POWER_MAX_HOLD_SECONDS"
+
+
+def resolve_max_hold_seconds(explicit: float | None = None) -> float:
+    """Resolve maximum hold duration from an explicit value or AGENT_POWER_MAX_HOLD_SECONDS.
+
+    Falls back to DEFAULT_MAX_HOLD_SECONDS (7200.0 = 2 hours) when unset or invalid.
+    """
+    if explicit is not None:
+        return float(explicit)
+    raw = os.environ.get(MAX_HOLD_SECONDS_ENV, "").strip()
+    if not raw:
+        return DEFAULT_MAX_HOLD_SECONDS
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return DEFAULT_MAX_HOLD_SECONDS
+    if not math.isfinite(parsed) or parsed <= 0.0:
+        return DEFAULT_MAX_HOLD_SECONDS
+    return parsed
 
 
 class ActionType(StrEnum):
@@ -61,8 +85,13 @@ class PolicySettings:
     only_while_plugged_in: bool = True
     min_battery_for_new_hold: int = 25
     critical_battery_sleep: int = 10
-    max_hold_seconds: float = 7200.0  # 2 hours
+    max_hold_seconds: float = DEFAULT_MAX_HOLD_SECONDS  # 2 hours
     idle_grace_seconds: float = 20.0
+
+    @classmethod
+    def from_env(cls) -> PolicySettings:
+        """Build PolicySettings honoring AGENT_POWER_MAX_HOLD_SECONDS (default 7200s)."""
+        return cls(max_hold_seconds=resolve_max_hold_seconds())
 
 
 @dataclass(frozen=True)
@@ -216,15 +245,19 @@ def decide(state: PolicyState) -> Action:
 
     # 5. Maximum hold duration (default 2 hours = 7200 seconds).
     if hold_seconds >= settings.max_hold_seconds:
-        max_mins = int(round(settings.max_hold_seconds / 60.0))
+        if settings.max_hold_seconds < 60.0:
+            limit_label = f"{settings.max_hold_seconds:g} seconds"
+        else:
+            max_mins = int(round(settings.max_hold_seconds / 60.0))
+            limit_label = f"{max_mins} minutes"
         if state.hold_active:
             return Action(
                 ActionType.RELEASE,
-                f"Released sleep hold: maximum hold time ({max_mins} minutes) reached.",
+                f"Released sleep hold: maximum hold time ({limit_label}) reached.",
             )
         return Action(
             ActionType.NOOP,
-            f"Maximum hold time ({max_mins} minutes) reached; not re-acquiring hold.",
+            f"Maximum hold time ({limit_label}) reached; not re-acquiring hold.",
         )
 
     # 6. Manual "Hold 2 hours" mode.

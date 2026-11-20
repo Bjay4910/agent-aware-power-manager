@@ -106,7 +106,7 @@ class PowerEngine:
     ) -> None:
         self.state_dir = get_state_dir(state_dir)
         self.room_home = room_home
-        self.settings = settings or PolicySettings()
+        self.settings = settings or PolicySettings.from_env()
         self.mode = Mode.from_str(mode)
         self.dry_run = dry_run
         self._clock = clock

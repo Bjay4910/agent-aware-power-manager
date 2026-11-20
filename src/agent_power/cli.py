@@ -40,7 +40,7 @@ from agent_power.hooks import (
     handle_hook_event,
     run_heartbeat_loop,
 )
-from agent_power.policy import Mode
+from agent_power.policy import Mode, resolve_max_hold_seconds
 from agent_power.power import set_disable_sleep
 from agent_power.runaway_guard import format_guard_status, run_guard_check
 from agent_power.watchdog import run_watchdog_check
@@ -97,8 +97,8 @@ def build_parser() -> argparse.ArgumentParser:
     hb_parser.add_argument(
         "--max-seconds",
         type=float,
-        default=DEFAULT_HEARTBEAT_MAX_SECONDS,
-        help="Maximum heartbeat lifetime in seconds (default 7200)",
+        default=None,
+        help="Maximum heartbeat lifetime in seconds (default 7200 or $AGENT_POWER_MAX_HOLD_SECONDS)",
     )
 
     install_parser = subparsers.add_parser(
@@ -285,7 +285,7 @@ def main(
             Path(args.file).expanduser(),
             agent_pid=int(args.agent_pid),
             interval_seconds=float(args.interval),
-            max_seconds=float(args.max_seconds),
+            max_seconds=resolve_max_hold_seconds(args.max_seconds),
         )
 
     if cmd == "install-hooks":
