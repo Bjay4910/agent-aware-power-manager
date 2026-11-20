@@ -3,7 +3,7 @@
 ## Setup
 
 - **Date:** Nov 20, 2026
-- **Hardware & power:** MacBook Pro on AC power at 90%, real `pmset`
+- **Hardware & power:** MacBook Pro on AC power (about 90% and charging when checked before the run), real `pmset`
 - **Cap configuration:** Cap set to 180s via `AGENT_POWER_MAX_HOLD_SECONDS` in the menubar LaunchAgent plist
 - **Workload:** Interactive `agy --mode auto` turn running `sleep 30` x8
 - **Observation:** Sampler logging every 5s
@@ -12,7 +12,7 @@
 
 - **12:01:38** — Hold acquired (`SleepDisabled=1`, one working agent).
 - **12:04:42** — Cap released at 184s while the agent was still working; `latch=True`; `"Maximum hold time (3 minutes) reached; not re-acquiring hold"`.
-- **12:05:06** — Menubar process restarted mid-latch (verified by process start time); `SleepDisabled` stayed `0` and `latch` stayed `True` for about 90s with the agent still working.
+- **12:05:06** — Menubar process restarted mid-latch (verified by process start time); `SleepDisabled` stayed `0` and `latch` stayed `True` for about 68 seconds after the restart (12:05:06 to 12:06:14), and the latch lasted about 87 seconds in total with the agent still working (12:04:47 to 12:06:14).
 - **12:06:19** — Agents ended; `latch=False` at **12:06:24**.
 - **12:09:44** — A fresh turn re-acquired the hold; released at **12:10:31**, about 21s after the turn ended (grace period).
 - **Afterwards** — Reverted the plist to the default cap; `agent-power doctor`: 0 FAIL.
