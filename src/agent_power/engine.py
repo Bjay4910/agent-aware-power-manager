@@ -12,6 +12,7 @@ import atexit
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -60,6 +61,15 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     tmp_path = path.with_suffix(f".tmp.{os.getpid()}")
     tmp_path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
     tmp_path.replace(path)
+
+
+def _as_finite_float(value: object) -> float | None:
+    """Return float(value) when value is a finite int/float (excluding bool), else None."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        parsed = float(value)
+        if math.isfinite(parsed):
+            return parsed
+    return None
 
 
 def load_state_file(state_dir: Path | str | None = None) -> dict[str, Any]:
@@ -178,26 +188,31 @@ class PowerEngine:
         if isinstance(existing.get("cap_expired_latch"), bool):
             self._cap_expired_latch = existing["cap_expired_latch"]
         wall_candidates = [
-            float(v)
+            parsed
             for v in (existing.get("max_wall_epoch"), existing.get("heartbeat_epoch"))
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
+            if (parsed := _as_finite_float(v)) is not None
         ]
         if wall_candidates:
             self._max_wall_epoch = max(wall_candidates)
-        if isinstance(existing.get("hold_started_at"), (int, float)):
-            self.hold_started_at = float(existing["hold_started_at"])
+        parsed_hold_start = _as_finite_float(existing.get("hold_started_at"))
+        if parsed_hold_start is not None:
+            self.hold_started_at = parsed_hold_start
             if self.hold_active:
                 elapsed_hold = max(0.0, self._clock() - self.hold_started_at)
                 self._hold_started_mono = self._monotonic_clock() - elapsed_hold
-        if isinstance(existing.get("last_working_at"), (int, float)):
-            self.last_working_at = float(existing["last_working_at"])
+        elif self.hold_active:
+            # Corrupt/missing hold_started_at on a restored active hold: restart the 2h cap clock now
+            self._hold_started_mono = self._monotonic_clock()
+        parsed_last_working = _as_finite_float(existing.get("last_working_at"))
+        if parsed_last_working is not None:
+            self.last_working_at = parsed_last_working
             elapsed_idle = max(0.0, self._clock() - self.last_working_at)
             self._last_working_mono = self._monotonic_clock() - elapsed_idle
         if isinstance(existing.get("menubar_icon_visible"), bool):
             self.menubar_icon_visible = existing["menubar_icon_visible"]
-        raw_icon_checked = existing.get("menubar_icon_checked_at")
-        if isinstance(raw_icon_checked, (int, float)) and not isinstance(raw_icon_checked, bool):
-            self.menubar_icon_checked_at = float(raw_icon_checked)
+        parsed_icon_checked = _as_finite_float(existing.get("menubar_icon_checked_at"))
+        if parsed_icon_checked is not None:
+            self.menubar_icon_checked_at = parsed_icon_checked
 
     def set_icon_visibility(
         self,

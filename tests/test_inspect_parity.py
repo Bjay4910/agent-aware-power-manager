@@ -213,3 +213,48 @@ def test_cli_status_readonly_spy_no_subprocess_no_writes(tmp_path: Path) -> None
     assert sub_calls == []
     assert write_calls == []
     assert state_file.read_bytes() == before_bytes
+
+
+def test_restore_existing_state_ignores_non_finite_bool_and_bad_timestamps_and_enforces_2h_cap(
+    tmp_path: Path,
+) -> None:
+    """NaN, inf, 1e309, bools, strings, and None in state.json timestamps must be ignored and 2h cap must still release."""
+    bad_raw_payloads = [
+        ("nan", '{"hold_active": true, "max_wall_epoch": NaN, "heartbeat_epoch": NaN, "hold_started_at": NaN, "last_working_at": NaN}'),
+        ("inf", '{"hold_active": true, "max_wall_epoch": Infinity, "heartbeat_epoch": -Infinity, "hold_started_at": Infinity, "last_working_at": Infinity}'),
+        ("1e309", '{"hold_active": true, "max_wall_epoch": 1e309, "heartbeat_epoch": 1e309, "hold_started_at": 1e309, "last_working_at": 1e309}'),
+        ("bool_true", json.dumps({"hold_active": True, "max_wall_epoch": True, "heartbeat_epoch": True, "hold_started_at": True, "last_working_at": True})),
+        ("bool_false", json.dumps({"hold_active": True, "max_wall_epoch": False, "heartbeat_epoch": False, "hold_started_at": False, "last_working_at": False})),
+        ("strings", json.dumps({"hold_active": True, "max_wall_epoch": "999", "heartbeat_epoch": "bad", "hold_started_at": "123", "last_working_at": "456"})),
+        ("none", json.dumps({"hold_active": True, "max_wall_epoch": None, "heartbeat_epoch": None, "hold_started_at": None, "last_working_at": None})),
+    ]
+
+    for label, raw_json in bad_raw_payloads:
+        sdir = tmp_path / f"state_{label}"
+        rdir = tmp_path / f"room_{label}"
+        sdir.mkdir(parents=True)
+        (sdir / "state.json").write_text(raw_json, encoding="utf-8")
+
+        clk = FakeClock(initial=1_760_000_000.0)
+        _write_presence(rdir, "claude", clk.now, "working")
+
+        eng = PowerEngine(
+            state_dir=sdir,
+            room_home=rdir,
+            clock=clk,
+            battery_reader=lambda: BatteryStatus(on_ac_power=True, percent=100, charging_state="charged"),
+            dry_run=True,
+        )
+        # All corrupt timestamp fields must have been ignored (not restored as NaN/inf/bool/str)
+        assert eng._max_wall_epoch is None, f"{label}: _max_wall_epoch was not ignored ({eng._max_wall_epoch!r})"
+        assert eng.hold_started_at is None, f"{label}: hold_started_at was not ignored ({eng.hold_started_at!r})"
+        assert eng.last_working_at is None, f"{label}: last_working_at was not ignored ({eng.last_working_at!r})"
+
+        # Active hold must still be capped at 2 hours (7200s) and release cleanly!
+        t0 = eng.step()
+        assert t0.hold_active is True, f"{label}: expected active hold at t=0"
+        clk.advance(7200.0)
+        _write_presence(rdir, "claude", clk.now, "working")
+        t_cap = eng.step()
+        assert t_cap.action.kind is ActionType.RELEASE, f"{label}: 2h cap did not release ({t_cap.action!r})"
+        assert t_cap.hold_active is False
