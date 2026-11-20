@@ -36,7 +36,7 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 from agent_power.presence_reader import STALE_AFTER_SECONDS, get_presence_dir
 
@@ -606,6 +606,9 @@ def run_heartbeat_loop(
     interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
     max_seconds: float = DEFAULT_HEARTBEAT_MAX_SECONDS,
     my_pid: int | None = None,
+    monotonic_fn: Callable[[], float] = time.monotonic,
+    wall_clock_fn: Callable[[], float] = time.time,
+    sleep_fn: Callable[[float], None] = time.sleep,
 ) -> int:
     """Refresh `updated_at` in `presence_file` until stopped, expired, or orphaned.
 
@@ -614,10 +617,10 @@ def run_heartbeat_loop(
     2. `status` in `presence_file` is not `"working"`.
     3. `hb_pid` in `presence_file` is set to a different PID (superseded).
     4. `agent_pid` (> 0) is no longer alive.
-    5. `max_seconds` has elapsed.
+    5. `max_seconds` has elapsed (tracked monotonically so backwards wall-clock jumps cannot extend it).
     """
     own_pid = my_pid if my_pid is not None else os.getpid()
-    started = time.monotonic()
+    started = monotonic_fn()
     poll_step = min(0.25, max(0.02, interval_seconds / 10.0))
 
     stop_requested = False
@@ -636,14 +639,41 @@ def run_heartbeat_loop(
     next_refresh = started + interval_seconds
     child_check_interval = min(1.0, max(0.05, interval_seconds / 2.0))
     next_child_check = started + child_check_interval
+    turn_mono_deadline = started + max_seconds
     cached_deadline: float | None = None
 
+    def _sync_deadline(raw_dl: object, now_mono_val: float, now_wall_val: float) -> bool:
+        """Update cached wall/monotonic deadlines from `max_deadline_epoch`.
+
+        Returns True only when a fresh turn strictly increased `max_deadline_epoch`.
+        Backwards wall-clock jumps never extend `turn_mono_deadline`.
+        """
+        nonlocal cached_deadline, turn_mono_deadline
+        if not (isinstance(raw_dl, (int, float)) and not isinstance(raw_dl, bool) and raw_dl > 0):
+            return False
+        dl = float(raw_dl)
+        if cached_deadline is None:
+            cached_deadline = dl
+            remaining = max(0.0, min(max_seconds, dl - now_wall_val))
+            turn_mono_deadline = min(turn_mono_deadline, now_mono_val + remaining)
+            return False
+        if dl > cached_deadline + 1e-6:
+            cached_deadline = dl
+            remaining = max(0.0, min(max_seconds, dl - now_wall_val))
+            turn_mono_deadline = now_mono_val + remaining
+            return True
+        if dl < cached_deadline - 1e-6:
+            cached_deadline = dl
+            remaining = max(0.0, dl - now_wall_val)
+            turn_mono_deadline = min(turn_mono_deadline, now_mono_val + remaining)
+        return False
+
     while not stop_requested:
-        now_mono = time.monotonic()
-        if cached_deadline is not None:
-            cap_exceeded = time.time() >= cached_deadline
-        else:
-            cap_exceeded = (now_mono - started) >= max_seconds
+        now_mono = monotonic_fn()
+        now_wall = wall_clock_fn()
+        cap_exceeded = (now_mono >= turn_mono_deadline) or (
+            cached_deadline is not None and now_wall >= cached_deadline
+        )
         if cap_exceeded:
             with _presence_lock(presence_file):
                 latest = _read_json_dict(presence_file)
@@ -652,19 +682,14 @@ def run_heartbeat_loop(
                 latest_hb = latest.get("hb_pid")
                 if _is_valid_pid(latest_hb) and latest_hb != own_pid:
                     return 0
-                raw_dl = latest.get("max_deadline_epoch")
+                extended = _sync_deadline(latest.get("max_deadline_epoch"), now_mono, now_wall)
                 if (
-                    isinstance(raw_dl, (int, float))
-                    and not isinstance(raw_dl, bool)
-                    and raw_dl > 0
+                    extended
+                    and now_mono < turn_mono_deadline
+                    and (cached_deadline is None or now_wall < cached_deadline)
                 ):
-                    cached_deadline = float(raw_dl)
-                    if time.time() < cached_deadline:
-                        # A fresh turn reset the deadline; continue running
-                        pass
-                    else:
-                        stop_session_presence(presence_file)
-                        return 0
+                    # A fresh turn strictly increased max_deadline_epoch; continue running
+                    pass
                 else:
                     stop_session_presence(presence_file)
                     return 0
@@ -693,9 +718,7 @@ def run_heartbeat_loop(
             recorded_hb = data.get("hb_pid")
             if _is_valid_pid(recorded_hb) and recorded_hb != own_pid:
                 return 0
-            raw_dl = data.get("max_deadline_epoch")
-            if isinstance(raw_dl, (int, float)) and not isinstance(raw_dl, bool) and raw_dl > 0:
-                cached_deadline = float(raw_dl)
+            _sync_deadline(data.get("max_deadline_epoch"), now_mono, now_wall)
 
             if data.get("waiting_for_children") is True:
                 raw_turn_start = data.get("turn_started_at")
@@ -753,11 +776,9 @@ def run_heartbeat_loop(
                 recorded_hb = data.get("hb_pid")
                 if _is_valid_pid(recorded_hb) and recorded_hb != own_pid:
                     return 0
-                raw_dl = data.get("max_deadline_epoch")
-                if isinstance(raw_dl, (int, float)) and not isinstance(raw_dl, bool) and raw_dl > 0:
-                    cached_deadline = float(raw_dl)
+                _sync_deadline(data.get("max_deadline_epoch"), now_mono, now_wall)
 
-                data["updated_at"] = datetime.now(timezone.utc).isoformat()
+                data["updated_at"] = datetime.fromtimestamp(wall_clock_fn(), tz=timezone.utc).isoformat()
                 data["hb_pid"] = own_pid
                 try:
                     _atomic_write_presence(presence_file, data)
@@ -766,8 +787,8 @@ def run_heartbeat_loop(
             next_refresh = now_mono + interval_seconds
 
         next_wake = min(next_refresh, next_child_check)
-        sleep_for = min(poll_step, max(0.01, next_wake - time.monotonic()))
-        time.sleep(sleep_for)
+        sleep_for = min(poll_step, max(0.01, next_wake - monotonic_fn()))
+        sleep_fn(sleep_for)
 
     return 0
 

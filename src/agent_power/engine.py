@@ -97,6 +97,7 @@ class PowerEngine:
         mode: Mode | str = Mode.AUTOMATIC,
         dry_run: bool | None = None,
         clock: Callable[[], float] = time.time,
+        monotonic_clock: Callable[[], float] | None = None,
         now_utc_fn: Callable[[], datetime] | None = None,
         battery_reader: Callable[[], BatteryStatus] = get_battery_status,
         presence_reader_fn: Callable[..., list[AgentPresence]] = read_presence,
@@ -109,6 +110,12 @@ class PowerEngine:
         self.mode = Mode.from_str(mode)
         self.dry_run = dry_run
         self._clock = clock
+        if monotonic_clock is not None:
+            self._monotonic_clock = monotonic_clock
+        elif clock is time.time:
+            self._monotonic_clock = time.monotonic
+        else:
+            self._monotonic_clock = clock
         self._now_utc_fn = now_utc_fn
         self._battery_reader = battery_reader
         self._presence_reader = presence_reader_fn
@@ -118,6 +125,8 @@ class PowerEngine:
         self.hold_active: bool = False
         self.hold_started_at: float | None = None
         self.last_working_at: float | None = None
+        self._hold_started_mono: float | None = None
+        self._last_working_mono: float | None = None
         self.menubar_icon_visible: bool | None = None
         self.menubar_icon_checked_at: float | None = None
         self.problem: str | None = None
@@ -159,8 +168,13 @@ class PowerEngine:
             self.hold_active = existing["hold_active"]
         if isinstance(existing.get("hold_started_at"), (int, float)):
             self.hold_started_at = float(existing["hold_started_at"])
+            if self.hold_active:
+                elapsed_hold = max(0.0, self._clock() - self.hold_started_at)
+                self._hold_started_mono = self._monotonic_clock() - elapsed_hold
         if isinstance(existing.get("last_working_at"), (int, float)):
             self.last_working_at = float(existing["last_working_at"])
+            elapsed_idle = max(0.0, self._clock() - self.last_working_at)
+            self._last_working_mono = self._monotonic_clock() - elapsed_idle
         if isinstance(existing.get("menubar_icon_visible"), bool):
             self.menubar_icon_visible = existing["menubar_icon_visible"]
         raw_icon_checked = existing.get("menubar_icon_checked_at")
@@ -208,6 +222,7 @@ class PowerEngine:
             self.mode = new_mode
             if new_mode is Mode.HOLD_2H and not self.hold_active:
                 self.hold_started_at = None
+                self._hold_started_mono = None
             self.record_event(f"Mode changed to {new_mode.label}")
         return self.step()
 
@@ -232,12 +247,14 @@ class PowerEngine:
     def step(self) -> EngineTickResult:
         """Execute one iteration of reading presence/battery, deciding, applying, and saving state."""
         now_epoch = self._clock()
+        now_mono = self._monotonic_clock()
         now_dt = self._now_utc()
 
         all_presence = self._presence_reader(self.room_home, now=now_dt)
         active = working_agents(all_presence)
         if active:
             self.last_working_at = now_epoch
+            self._last_working_mono = now_mono
 
         battery = self._battery_reader()
         agent_tuples = tuple((a.agent, a.task) for a in active)
@@ -245,18 +262,34 @@ class PowerEngine:
         sleep_req = self._sleep_now_requested
         self._sleep_now_requested = False
 
+        if self.hold_active:
+            if self._hold_started_mono is not None:
+                hold_duration = max(0.0, now_mono - self._hold_started_mono)
+            elif self.hold_started_at is not None:
+                hold_duration = max(0.0, now_epoch - self.hold_started_at)
+            else:
+                hold_duration = 0.0
+        else:
+            hold_duration = 0.0
+
+        if self._last_working_mono is not None:
+            idle_duration: float | None = max(0.0, now_mono - self._last_working_mono)
+        elif self.last_working_at is not None:
+            idle_duration = max(0.0, now_epoch - self.last_working_at)
+        else:
+            idle_duration = None
+
         policy_state = PolicyState(
             any_agent_working=len(active) > 0,
             active_agents=agent_tuples,
             on_ac_power=battery.on_ac_power,
             battery_percent=battery.percent,
             hold_active=self.hold_active,
+            hold_duration_seconds=hold_duration,
+            idle_duration_seconds=idle_duration,
             mode=self.mode,
             sleep_now_requested=sleep_req,
             settings=self.settings,
-            now=now_epoch,
-            hold_started_at=self.hold_started_at if self.hold_active else None,
-            last_working_at=self.last_working_at,
         )
 
         decision = decide(policy_state)
@@ -267,6 +300,7 @@ class PowerEngine:
             if power_res.ok:
                 self.hold_active = True
                 self.hold_started_at = now_epoch
+                self._hold_started_mono = now_mono
                 self.problem = None
                 self.record_event(decision.reason)
             else:
@@ -278,6 +312,7 @@ class PowerEngine:
             if power_res.ok:
                 self.hold_active = False
                 self.hold_started_at = None
+                self._hold_started_mono = None
                 self.problem = None
                 self.record_event(decision.reason)
             else:
@@ -289,6 +324,7 @@ class PowerEngine:
             if power_res.ok:
                 self.hold_active = False
                 self.hold_started_at = None
+                self._hold_started_mono = None
                 self.problem = None
                 self.record_event(decision.reason)
             else:
@@ -377,6 +413,7 @@ class PowerEngine:
             if res.ok:
                 self.hold_active = False
                 self.hold_started_at = None
+                self._hold_started_mono = None
                 self.record_event(reason)
             else:
                 self.problem = res.problem
