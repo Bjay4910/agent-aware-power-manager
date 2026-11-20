@@ -226,24 +226,33 @@ def test_wall_clock_moving_backwards_still_enforces_2h_cap_and_idle_grace(tmp_pa
 
     wall.advance(10.0)
     mono.advance(10.0)
-    _write_presence_iso(room_dir, "claude", datetime.fromtimestamp(wall.now, tz=timezone.utc).isoformat())
+    pre_jump_ts = datetime.fromtimestamp(wall.now, tz=timezone.utc).isoformat()
+    _write_presence_iso(room_dir, "claude", pre_jump_ts)
     assert eng.step().action.kind is ActionType.HOLD
 
-    # Presence file is now 125s old (stale) -> ignored, starts idle grace
-    stale_ts = datetime.fromtimestamp(wall.now - 125.0, tz=timezone.utc).isoformat()
-    _write_presence_iso(room_dir, "claude", stale_ts)
-    assert len(working_agents(read_presence(room_dir, now=datetime.fromtimestamp(wall.now, tz=timezone.utc)))) == 0
-    wall.advance(5.0)
-    mono.advance(5.0)
-    assert eng.step().hold_active is True  # 5s idle < 20s grace
-
-    # Wall clock jumps backwards by 600s, while monotonic advances 15s (total 20s idle) -> MUST release!
+    # Wall clock jumps backwards by 600s while the presence file STILL carries pre_jump_ts (now 600s in the future!).
+    # Do NOT rewrite updated_at: a pre-jump presence file >5s in the future must be treated as stale!
     wall.jump(-600.0)
+    mono.advance(5.0)
+    t_future_stale_5s = eng.step()
+    assert t_future_stale_5s.active_agents == []
+    assert t_future_stale_5s.hold_active is True  # 5s idle < 20s monotonic grace
+
+    # After 15s more monotonic time (20s idle total), the hold MUST release even though the file is dated in the future
     mono.advance(15.0)
-    _write_presence_iso(room_dir, "claude", datetime.fromtimestamp(wall.now - 125.0, tz=timezone.utc).isoformat())
     t_idle = eng.step()
+    assert t_idle.active_agents == []
     assert t_idle.action.kind is ActionType.RELEASE
     assert t_idle.hold_active is False
+
+    # Once a live heartbeat rewrites updated_at to the new wall clock, the session recovers and can hold again
+    wall.advance(30.0)
+    mono.advance(30.0)
+    _write_presence_iso(room_dir, "claude", datetime.fromtimestamp(wall.now, tz=timezone.utc).isoformat())
+    t_recovered = eng.step()
+    assert len(t_recovered.active_agents) == 1
+    assert t_recovered.action.kind is ActionType.HOLD
+    assert t_recovered.hold_active is True
 
 
 def test_heartbeat_loop_enforces_2h_cap_when_wall_clock_jumps_backwards(tmp_path: Path) -> None:
@@ -396,3 +405,89 @@ def test_heartbeat_fresh_turn_after_small_leftover_gets_full_cap(
     assert state["turn2_written"] is True
     assert state["alive_at_1h"] is True
     assert (mono.now - 100.0) >= 7200.0
+
+
+def test_heartbeat_loop_survives_forward_wall_clock_jump_and_uses_monotonic_cap(
+    tmp_path: Path,
+) -> None:
+    """A forward wall-clock jump (e.g. NTP +4h) must NOT end the heartbeat early; monotonic 7200s governs expiry."""
+    wall = MutableWallClock(1_760_000_000.0)
+    mono = FakeClock(initial=100.0)
+
+    p_file = tmp_path / "presence" / "claude-forward-jump.json"
+    p_file.parent.mkdir(parents=True, exist_ok=True)
+    p_file.write_text(
+        json.dumps(
+            {
+                "agent": "claude",
+                "status": "working",
+                "task": "forward jump test",
+                "pid": os.getpid(),
+                "updated_at": datetime.fromtimestamp(wall.now, tz=timezone.utc).isoformat(),
+                "max_deadline_epoch": wall.now + 7200.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = {"jumped": False, "alive_after_jump": False}
+
+    def fake_sleep(seconds: float) -> None:
+        step = max(seconds, 600.0)
+        mono.advance(step)
+        wall.advance(step)
+        if not state["jumped"] and mono.now >= 700.0:
+            state["jumped"] = True
+            # Jump wall clock FORWARD by 4 hours (past max_deadline_epoch)!
+            wall.jump(14_400.0)
+        if state["jumped"] and mono.now >= 3700.0 and p_file.is_file():
+            state["alive_after_jump"] = True
+
+    rc = run_heartbeat_loop(
+        p_file,
+        agent_pid=os.getpid(),
+        interval_seconds=30.0,
+        max_seconds=7200.0,
+        monotonic_fn=mono,
+        wall_clock_fn=wall,
+        sleep_fn=fake_sleep,
+    )
+    assert rc == 0
+    assert not p_file.is_file()
+    assert state["jumped"] is True
+    assert state["alive_after_jump"] is True
+    assert 7200.0 <= (mono.now - 100.0) < 8000.0
+
+
+def test_future_presence_more_than_5s_ahead_is_stale() -> None:
+    """With max_future_seconds=5.0, timestamps <=5s ahead stay fresh and >5s ahead are stale."""
+    now = datetime(2026, 11, 20, 12, 0, 0, tzinfo=timezone.utc)
+    rec_within = parse_presence_record(
+        {
+            "agent": "claude",
+            "status": "working",
+            "task": "small clock skew",
+            "pid": 123,
+            "updated_at": (now + timedelta(seconds=5.0)).isoformat(),
+        },
+        now=now,
+        max_future_seconds=5.0,
+    )
+    assert rec_within is not None
+    assert rec_within.is_stale is False
+    assert rec_within.is_working is True
+
+    rec_future = parse_presence_record(
+        {
+            "agent": "claude",
+            "status": "working",
+            "task": "after backward jump",
+            "pid": 123,
+            "updated_at": (now + timedelta(seconds=5.1)).isoformat(),
+        },
+        now=now,
+        max_future_seconds=5.0,
+    )
+    assert rec_future is not None
+    assert rec_future.is_stale is True
+    assert rec_future.is_working is False

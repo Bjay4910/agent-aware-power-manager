@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterable
 
 STALE_AFTER_SECONDS: float = 120.0
+MAX_FUTURE_SKEW_SECONDS: float = 5.0
 VALID_STATUSES: frozenset[str] = frozenset({"working", "idle"})
 ALLOWED_TASK_MAX_CHARS: int = 280
 
@@ -68,6 +69,7 @@ def parse_presence_record(
     *,
     now: datetime | None = None,
     stale_after_seconds: float = STALE_AFTER_SECONDS,
+    max_future_seconds: float | None = None,
 ) -> AgentPresence | None:
     """Validate a decoded JSON object against the presence contract.
 
@@ -98,7 +100,12 @@ def parse_presence_record(
 
     ref_now = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
     age_seconds = (ref_now - updated_at).total_seconds()
-    is_stale = raw_status == "working" and age_seconds > stale_after_seconds
+    is_future_stale = (
+        max_future_seconds is not None and age_seconds < -max_future_seconds
+    )
+    is_stale = raw_status == "working" and (
+        age_seconds > stale_after_seconds or is_future_stale
+    )
     effective_status = "idle" if is_stale else raw_status
 
     clean_task = " ".join(task.strip().split())[:ALLOWED_TASK_MAX_CHARS]
@@ -120,6 +127,7 @@ def read_presence(
     *,
     now: datetime | None = None,
     stale_after_seconds: float = STALE_AFTER_SECONDS,
+    max_future_seconds: float | None = None,
 ) -> list[AgentPresence]:
     """Read and validate all agent presence files in the room directory."""
     presence_dir = get_presence_dir(room_home)
@@ -147,6 +155,7 @@ def read_presence(
             raw_data,
             now=ref_now,
             stale_after_seconds=stale_after_seconds,
+            max_future_seconds=max_future_seconds,
         )
         if record is not None:
             results.append(record)

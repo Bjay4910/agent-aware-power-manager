@@ -669,12 +669,14 @@ def run_heartbeat_loop(
             turn_mono_deadline = min(turn_mono_deadline, now_mono_val + remaining)
         return False
 
+    initial_data = _read_json_dict(presence_file)
+    if initial_data is not None:
+        _sync_deadline(initial_data.get("max_deadline_epoch"), started, wall_clock_fn())
+
     while not stop_requested:
         now_mono = monotonic_fn()
         now_wall = wall_clock_fn()
-        cap_exceeded = (now_mono >= turn_mono_deadline) or (
-            cached_deadline is not None and now_wall >= cached_deadline
-        )
+        cap_exceeded = now_mono >= turn_mono_deadline
         if cap_exceeded:
             with _presence_lock(presence_file):
                 latest = _read_json_dict(presence_file)
@@ -684,11 +686,7 @@ def run_heartbeat_loop(
                 if _is_valid_pid(latest_hb) and latest_hb != own_pid:
                     return 0
                 extended = _sync_deadline(latest.get("max_deadline_epoch"), now_mono, now_wall)
-                if (
-                    extended
-                    and now_mono < turn_mono_deadline
-                    and (cached_deadline is None or now_wall < cached_deadline)
-                ):
+                if extended and now_mono < turn_mono_deadline:
                     # A fresh turn strictly increased max_deadline_epoch; continue running
                     pass
                 else:

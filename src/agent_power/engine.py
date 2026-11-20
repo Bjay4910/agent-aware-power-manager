@@ -33,7 +33,12 @@ from agent_power.power import (
     set_disable_sleep,
     sleep_now,
 )
-from agent_power.presence_reader import AgentPresence, read_presence, working_agents
+from agent_power.presence_reader import (
+    MAX_FUTURE_SKEW_SECONDS,
+    AgentPresence,
+    read_presence,
+    working_agents,
+)
 
 LOOP_INTERVAL_SECONDS: float = 5.0
 MAX_EVENTS: int = 50
@@ -129,6 +134,7 @@ class PowerEngine:
         self._last_working_mono: float | None = None
         self._unreadable_battery_streak: int = 0
         self._cap_expired_latch: bool = False
+        self._max_wall_epoch: float | None = None
         self.menubar_icon_visible: bool | None = None
         self.menubar_icon_checked_at: float | None = None
         self.problem: str | None = None
@@ -169,6 +175,9 @@ class PowerEngine:
             )
         if isinstance(existing.get("hold_active"), bool):
             self.hold_active = existing["hold_active"]
+        raw_hb = existing.get("heartbeat_epoch")
+        if isinstance(raw_hb, (int, float)) and not isinstance(raw_hb, bool):
+            self._max_wall_epoch = float(raw_hb)
         if isinstance(existing.get("hold_started_at"), (int, float)):
             self.hold_started_at = float(existing["hold_started_at"])
             if self.hold_active:
@@ -255,7 +264,20 @@ class PowerEngine:
         now_mono = self._monotonic_clock()
         now_dt = self._now_utc()
 
-        all_presence = self._presence_reader(self.room_home, now=now_dt)
+        wall_jumped_back = (
+            self._max_wall_epoch is not None and now_epoch < self._max_wall_epoch
+        )
+        if self._max_wall_epoch is None or now_epoch > self._max_wall_epoch:
+            self._max_wall_epoch = now_epoch
+
+        if wall_jumped_back:
+            all_presence = self._presence_reader(
+                self.room_home,
+                now=now_dt,
+                max_future_seconds=MAX_FUTURE_SKEW_SECONDS,
+            )
+        else:
+            all_presence = self._presence_reader(self.room_home, now=now_dt)
         active = working_agents(all_presence)
         if active:
             self.last_working_at = now_epoch
