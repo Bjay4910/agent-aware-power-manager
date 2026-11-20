@@ -177,9 +177,13 @@ class PowerEngine:
             self.hold_active = existing["hold_active"]
         if isinstance(existing.get("cap_expired_latch"), bool):
             self._cap_expired_latch = existing["cap_expired_latch"]
-        raw_hb = existing.get("heartbeat_epoch")
-        if isinstance(raw_hb, (int, float)) and not isinstance(raw_hb, bool):
-            self._max_wall_epoch = float(raw_hb)
+        wall_candidates = [
+            float(v)
+            for v in (existing.get("max_wall_epoch"), existing.get("heartbeat_epoch"))
+            if isinstance(v, (int, float)) and not isinstance(v, bool)
+        ]
+        if wall_candidates:
+            self._max_wall_epoch = max(wall_candidates)
         if isinstance(existing.get("hold_started_at"), (int, float)):
             self.hold_started_at = float(existing["hold_started_at"])
             if self.hold_active:
@@ -260,26 +264,36 @@ class PowerEngine:
         self._sleep_now_requested = True
         return self.step()
 
+    def _read_all_presence(
+        self,
+        now_epoch: float,
+        now_dt: datetime,
+        *,
+        update_high_water: bool,
+    ) -> list[AgentPresence]:
+        wall_jumped_back = (
+            self._max_wall_epoch is not None and now_epoch < self._max_wall_epoch
+        )
+        if update_high_water and (
+            self._max_wall_epoch is None or now_epoch > self._max_wall_epoch
+        ):
+            self._max_wall_epoch = now_epoch
+
+        if wall_jumped_back or self._clock is time.time:
+            return self._presence_reader(
+                self.room_home,
+                now=now_dt,
+                max_future_seconds=MAX_FUTURE_SKEW_SECONDS,
+            )
+        return self._presence_reader(self.room_home, now=now_dt)
+
     def step(self) -> EngineTickResult:
         """Execute one iteration of reading presence/battery, deciding, applying, and saving state."""
         now_epoch = self._clock()
         now_mono = self._monotonic_clock()
         now_dt = self._now_utc()
 
-        wall_jumped_back = (
-            self._max_wall_epoch is not None and now_epoch < self._max_wall_epoch
-        )
-        if self._max_wall_epoch is None or now_epoch > self._max_wall_epoch:
-            self._max_wall_epoch = now_epoch
-
-        if wall_jumped_back:
-            all_presence = self._presence_reader(
-                self.room_home,
-                now=now_dt,
-                max_future_seconds=MAX_FUTURE_SKEW_SECONDS,
-            )
-        else:
-            all_presence = self._presence_reader(self.room_home, now=now_dt)
+        all_presence = self._read_all_presence(now_epoch, now_dt, update_high_water=True)
         active = working_agents(all_presence)
         if active:
             self.last_working_at = now_epoch
@@ -409,17 +423,7 @@ class PowerEngine:
         now_mono = self._monotonic_clock()
         now_dt = self._now_utc()
 
-        wall_jumped_back = (
-            self._max_wall_epoch is not None and now_epoch < self._max_wall_epoch
-        )
-        if wall_jumped_back:
-            all_presence = self._presence_reader(
-                self.room_home,
-                now=now_dt,
-                max_future_seconds=MAX_FUTURE_SKEW_SECONDS,
-            )
-        else:
-            all_presence = self._presence_reader(self.room_home, now=now_dt)
+        all_presence = self._read_all_presence(now_epoch, now_dt, update_high_water=False)
         active = working_agents(all_presence)
 
         battery = self._battery_reader()
@@ -484,6 +488,7 @@ class PowerEngine:
         payload: dict[str, Any] = {
             "heartbeat_at": now_dt.isoformat(),
             "heartbeat_epoch": now_epoch,
+            "max_wall_epoch": self._max_wall_epoch,
             "pid": os.getpid(),
             "hold_active": self.hold_active,
             "hold_started_at": self.hold_started_at,

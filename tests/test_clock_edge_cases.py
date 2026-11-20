@@ -491,3 +491,96 @@ def test_future_presence_more_than_5s_ahead_is_stale() -> None:
     assert rec_future is not None
     assert rec_future.is_stale is True
     assert rec_future.is_working is False
+
+
+def test_production_clock_rejects_future_presence_at_startup_and_accepts_3s_skew(
+    tmp_path: Path,
+) -> None:
+    """With the default production clock (time.time), a +3600s file at startup is stale, while +3s is accepted."""
+    import time as _time
+
+    now = _time.time()
+    room_future = tmp_path / "room_future"
+    _write_presence_iso(
+        room_future,
+        "crashed_future",
+        datetime.fromtimestamp(now + 3600.0, tz=timezone.utc).isoformat(),
+    )
+    eng_future = PowerEngine(
+        state_dir=tmp_path / "state_future",
+        room_home=room_future,
+        battery_reader=_ac_battery,
+        dry_run=True,
+    )
+    t_future = eng_future.step()
+    assert t_future.active_agents == []
+    assert t_future.action.kind is ActionType.NOOP
+    assert t_future.hold_active is False
+
+    room_skew = tmp_path / "room_skew"
+    _write_presence_iso(
+        room_skew,
+        "small_skew",
+        datetime.fromtimestamp(now + 3.0, tz=timezone.utc).isoformat(),
+    )
+    eng_skew = PowerEngine(
+        state_dir=tmp_path / "state_skew",
+        room_home=room_skew,
+        battery_reader=_ac_battery,
+        dry_run=True,
+    )
+    t_skew = eng_skew.step()
+    assert len(t_skew.active_agents) == 1
+    assert t_skew.action.kind is ActionType.HOLD
+    assert t_skew.hold_active is True
+
+
+def test_max_wall_epoch_persists_across_restart_after_backward_jump(tmp_path: Path) -> None:
+    """Persisting max_wall_epoch in state.json ensures a restart after a backward jump still rejects future presence."""
+    from agent_power.engine import load_state_file
+
+    wall = MutableWallClock(1_760_000_000.0)
+    mono = FakeClock(initial=5000.0)
+    state_dir = tmp_path / "state"
+    room_dir = tmp_path / "room"
+
+    eng1 = PowerEngine(
+        state_dir=state_dir,
+        room_home=room_dir,
+        clock=wall,
+        monotonic_clock=mono,
+        battery_reader=_ac_battery,
+        dry_run=True,
+    )
+    pre_jump_ts = datetime.fromtimestamp(wall.now, tz=timezone.utc).isoformat()
+    _write_presence_iso(room_dir, "claude", pre_jump_ts)
+    assert eng1.step().action.kind is ActionType.HOLD
+
+    # Jump wall clock backwards by 600s and step once (which writes state.json with lower heartbeat_epoch)
+    wall.jump(-600.0)
+    mono.advance(5.0)
+    assert eng1.step().active_agents == []
+    saved = load_state_file(state_dir)
+    assert saved["heartbeat_epoch"] == 1_759_999_400.0
+    assert saved["max_wall_epoch"] == 1_760_000_000.0
+
+    # Restart PowerEngine from state.json while wall clock is still below pre-jump high-water mark
+    wall.advance(5.0)
+    mono.advance(5.0)
+    eng2 = PowerEngine(
+        state_dir=state_dir,
+        room_home=room_dir,
+        clock=wall,
+        monotonic_clock=mono,
+        battery_reader=_ac_battery,
+        dry_run=True,
+    )
+    t_restarted = eng2.step()
+    assert t_restarted.active_agents == []
+    # After 20s monotonic idle time post-restart, hold releases cleanly (future-dated file stays stale)
+    wall.advance(20.0)
+    mono.advance(20.0)
+    t_release = eng2.step()
+    assert t_release.active_agents == []
+    assert t_release.action.kind is ActionType.RELEASE
+    assert t_release.hold_active is False
