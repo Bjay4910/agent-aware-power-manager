@@ -137,12 +137,14 @@ Review and run the installer yourself from your terminal:
 
 - **Original lid-closed test:** I closed the laptop lid for about 5 minutes with an agent presence file reported as working, while the Mac was plugged in. A timestamp logged every 5 seconds produced 60 entries with no gaps over 8 seconds. Repeated once with the same result (two runs total). After each run the hold was released (`pmset -g` showed `SleepDisabled 0`).
 - **Real background-command E2E tests (plugged in, lid open):** Verified on both Antigravity CLI (`agy`) and Claude Code (`claude -p` in stream-json mode) with a 65-second background command outliving `Stop`: the session presence file stayed `"working"` (`waiting_for_children: true`) and `pmset -g` stayed `SleepDisabled 1` until the command exited, then removed the file and returned to `SleepDisabled 0` after the 20-second grace period.
+- **Lid-closed with lifecycle hooks (plugged in, one run):** On my MacBook Pro, a real Claude Code session started a 4-minute background command (a loop writing a timestamp every 5 seconds to a log) and ended its turn. I closed the lid; the log had 48 entries with no gap over 8 seconds, and `SleepDisabled` was `0` afterwards. One run only.
+- **Lid-closed with lifecycle hooks (on battery, one run):** On my MacBook Pro, unplugged with **"Only while plugged in"** unticked (battery at 62% at the end), the same 4-minute timestamp-loop test produced 48 entries with no gaps, and `SleepDisabled` was back to `0` about a minute after the command finished. One run only (no battery drain numbers or longer durations verified).
 - **Not yet tested:**
-  - Unplugged battery-mode behavior in a real run
-  - Lid-closed test with the new hooks and background-command tracking code
   - Full 2-hour cap in real time (verified with short timeouts in automated tests)
-  - The Antigravity desktop IDE (tested with Antigravity CLI `agy` only)
-  - Interactive Claude Code TUI (the real Claude Code E2E test used `claude -p`)
+  - Other Mac models
+  - The Antigravity desktop IDE (only the Antigravity CLI `agy` is verified)
+  - Battery below 25%
+  - DST / clock changes
 
 ## Credits
 
