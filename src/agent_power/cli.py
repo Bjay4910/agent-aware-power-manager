@@ -24,6 +24,7 @@ from pathlib import Path
 import sys
 from typing import Sequence
 
+from agent_power.doctor import format_doctor_report, run_doctor
 from agent_power.engine import (
     PowerEngine,
     _atomic_write_json,
@@ -70,6 +71,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("guard-run", help="Run the runaway background script guard check once")
     subparsers.add_parser("guard-status", help="Show runaway guard status, tracked scripts, and recent log")
+
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Run read-only diagnostics on LaunchAgents, sudoers, hooks, presence, sleep state, and menu bar icon",
+    )
+    doctor_parser.add_argument("--claude-settings", type=Path, default=None, help="Override path to Claude settings.json")
+    doctor_parser.add_argument("--agy-hooks", type=Path, default=None, help="Override path to Antigravity hooks.json")
+    doctor_parser.add_argument("--room-home", type=Path, default=None, help="Override path to agent-room home directory")
+
     subparsers.add_parser("menubar", help="Launch the macOS menu-bar application")
     subparsers.add_parser("watchdog", help="Run the 60-second watchdog check once")
 
@@ -239,6 +249,16 @@ def main(
     if cmd == "guard-status":
         print(format_guard_status(state_dir=state_dir, config_dir=config_dir, log_path=log_path))
         return 0
+
+    if cmd == "doctor":
+        report = run_doctor(
+            state_dir=state_dir,
+            room_home=args.room_home,
+            claude_settings_path=args.claude_settings,
+            agy_hooks_path=args.agy_hooks,
+        )
+        print(format_doctor_report(report))
+        return report.exit_code
 
     if cmd == "watchdog":
         wres = run_watchdog_check(state_dir=state_dir)
