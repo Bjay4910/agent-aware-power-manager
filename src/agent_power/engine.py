@@ -287,29 +287,46 @@ class PowerEngine:
             )
         return self._presence_reader(self.room_home, now=now_dt)
 
-    def step(self) -> EngineTickResult:
-        """Execute one iteration of reading presence/battery, deciding, applying, and saving state."""
-        now_epoch = self._clock()
-        now_mono = self._monotonic_clock()
-        now_dt = self._now_utc()
+    def _evaluate_tick(
+        self,
+        now_epoch: float,
+        now_mono: float,
+        now_dt: datetime,
+        *,
+        mutate: bool,
+    ) -> tuple[list[AgentPresence], BatteryStatus, Action, bool]:
+        """Compute active presence, battery status, policy decision, and cap_reached.
 
-        all_presence = self._read_all_presence(now_epoch, now_dt, update_high_water=True)
+        Shared by both step() (mutate=True) and inspect() (mutate=False) so read-only
+        inspection always matches what step() would decide without side effects.
+        """
+        all_presence = self._read_all_presence(
+            now_epoch, now_dt, update_high_water=mutate
+        )
         active = working_agents(all_presence)
+
+        effective_last_working_at = self.last_working_at
+        effective_last_working_mono = self._last_working_mono
+        effective_cap_latch = self._cap_expired_latch
         if active:
-            self.last_working_at = now_epoch
-            self._last_working_mono = now_mono
+            effective_last_working_at = now_epoch
+            effective_last_working_mono = now_mono
         else:
-            self._cap_expired_latch = False
+            effective_cap_latch = False
 
         battery = self._battery_reader()
         if not battery.on_ac_power and battery.percent is None:
-            self._unreadable_battery_streak += 1
+            effective_streak = self._unreadable_battery_streak + 1
         else:
-            self._unreadable_battery_streak = 0
-        agent_tuples = tuple((a.agent, a.task) for a in active)
+            effective_streak = 0
 
-        sleep_req = self._sleep_now_requested
-        self._sleep_now_requested = False
+        sleep_req = self._sleep_now_requested if mutate else False
+        if mutate:
+            self.last_working_at = effective_last_working_at
+            self._last_working_mono = effective_last_working_mono
+            self._cap_expired_latch = effective_cap_latch
+            self._unreadable_battery_streak = effective_streak
+            self._sleep_now_requested = False
 
         if self.hold_active:
             if self._hold_started_mono is not None:
@@ -318,23 +335,23 @@ class PowerEngine:
                 hold_duration = max(0.0, now_epoch - self.hold_started_at)
             else:
                 hold_duration = 0.0
-        elif self._cap_expired_latch:
+        elif effective_cap_latch:
             hold_duration = self.settings.max_hold_seconds
         else:
             hold_duration = 0.0
 
         cap_reached = self.hold_active and hold_duration >= self.settings.max_hold_seconds
 
-        if self._last_working_mono is not None:
-            idle_duration: float | None = max(0.0, now_mono - self._last_working_mono)
-        elif self.last_working_at is not None:
-            idle_duration = max(0.0, now_epoch - self.last_working_at)
+        if effective_last_working_mono is not None:
+            idle_duration: float | None = max(0.0, now_mono - effective_last_working_mono)
+        elif effective_last_working_at is not None:
+            idle_duration = max(0.0, now_epoch - effective_last_working_at)
         else:
             idle_duration = None
 
         policy_state = PolicyState(
             any_agent_working=len(active) > 0,
-            active_agents=agent_tuples,
+            active_agents=tuple((a.agent, a.task) for a in active),
             on_ac_power=battery.on_ac_power,
             battery_percent=battery.percent,
             hold_active=self.hold_active,
@@ -343,10 +360,20 @@ class PowerEngine:
             mode=self.mode,
             sleep_now_requested=sleep_req,
             settings=self.settings,
-            unreadable_battery_streak=self._unreadable_battery_streak,
+            unreadable_battery_streak=effective_streak,
         )
-
         decision = decide(policy_state)
+        return active, battery, decision, cap_reached
+
+    def step(self) -> EngineTickResult:
+        """Execute one iteration of reading presence/battery, deciding, applying, and saving state."""
+        now_epoch = self._clock()
+        now_mono = self._monotonic_clock()
+        now_dt = self._now_utc()
+
+        active, battery, decision, cap_reached = self._evaluate_tick(
+            now_epoch, now_mono, now_dt, mutate=True
+        )
         power_res: PowerResult | None = None
 
         if decision.kind is ActionType.HOLD:
@@ -423,46 +450,9 @@ class PowerEngine:
         now_mono = self._monotonic_clock()
         now_dt = self._now_utc()
 
-        all_presence = self._read_all_presence(now_epoch, now_dt, update_high_water=False)
-        active = working_agents(all_presence)
-
-        battery = self._battery_reader()
-        agent_tuples = tuple((a.agent, a.task) for a in active)
-
-        if self.hold_active:
-            if self._hold_started_mono is not None:
-                hold_duration = max(0.0, now_mono - self._hold_started_mono)
-            elif self.hold_started_at is not None:
-                hold_duration = max(0.0, now_epoch - self.hold_started_at)
-            else:
-                hold_duration = 0.0
-        elif self._cap_expired_latch and active:
-            hold_duration = self.settings.max_hold_seconds
-        else:
-            hold_duration = 0.0
-
-        if self._last_working_mono is not None:
-            idle_duration: float | None = max(0.0, now_mono - self._last_working_mono)
-        elif self.last_working_at is not None:
-            idle_duration = max(0.0, now_epoch - self.last_working_at)
-        else:
-            idle_duration = None
-
-        policy_state = PolicyState(
-            any_agent_working=len(active) > 0,
-            active_agents=agent_tuples,
-            on_ac_power=battery.on_ac_power,
-            battery_percent=battery.percent,
-            hold_active=self.hold_active,
-            hold_duration_seconds=hold_duration,
-            idle_duration_seconds=idle_duration,
-            mode=self.mode,
-            sleep_now_requested=False,
-            settings=self.settings,
-            unreadable_battery_streak=self._unreadable_battery_streak,
+        active, battery, decision, _ = self._evaluate_tick(
+            now_epoch, now_mono, now_dt, mutate=False
         )
-        decision = decide(policy_state)
-
         return EngineTickResult(
             action=decision,
             power_result=None,
