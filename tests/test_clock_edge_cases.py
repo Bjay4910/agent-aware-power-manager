@@ -339,3 +339,60 @@ def test_hold_crossing_midnight_releases_at_2h_cap_and_ignores_stale_presence(tm
     _write_presence_iso(room_dir, "claude", pre_midnight.isoformat())
     assert len(working_agents(read_presence(room_dir, now=post_90s))) == 1
     assert len(working_agents(read_presence(room_dir, now=post_121s))) == 0
+
+
+def test_heartbeat_fresh_turn_after_small_leftover_gets_full_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A heartbeat started with small leftover max_seconds (60s) must get a full 7200s cap when a fresh turn raises max_deadline_epoch."""
+    monkeypatch.delenv("AGENT_POWER_MAX_HOLD_SECONDS", raising=False)
+    wall = MutableWallClock(1_760_000_000.0)
+    mono = FakeClock(initial=100.0)
+
+    p_file = tmp_path / "presence" / "claude-fresh-full-cap.json"
+    p_file.parent.mkdir(parents=True, exist_ok=True)
+    p_file.write_text(
+        json.dumps(
+            {
+                "agent": "claude",
+                "status": "working",
+                "task": "turn 1 leftover",
+                "pid": os.getpid(),
+                "updated_at": datetime.fromtimestamp(wall.now, tz=timezone.utc).isoformat(),
+                "max_deadline_epoch": wall.now + 60.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = {"turn2_written": False, "alive_at_1h": False}
+
+    def fake_sleep(seconds: float) -> None:
+        if not state["turn2_written"] and mono.now >= 120.0:
+            state["turn2_written"] = True
+            # Fresh Turn 2 resets max_deadline_epoch to a full 7200s from now
+            data = json.loads(p_file.read_text(encoding="utf-8"))
+            data["max_deadline_epoch"] = wall.now + 7200.0
+            data["updated_at"] = datetime.fromtimestamp(wall.now, tz=timezone.utc).isoformat()
+            p_file.write_text(json.dumps(data), encoding="utf-8")
+        step = 30.0 if not state["turn2_written"] else 600.0
+        mono.advance(step)
+        wall.advance(step)
+        if mono.now >= 3700.0 and p_file.is_file():
+            state["alive_at_1h"] = True
+
+    rc = run_heartbeat_loop(
+        p_file,
+        agent_pid=os.getpid(),
+        interval_seconds=30.0,
+        max_seconds=60.0,
+        monotonic_fn=mono,
+        wall_clock_fn=wall,
+        sleep_fn=fake_sleep,
+    )
+    assert rc == 0
+    assert not p_file.is_file()
+    assert state["turn2_written"] is True
+    assert state["alive_at_1h"] is True
+    assert (mono.now - 100.0) >= 7200.0

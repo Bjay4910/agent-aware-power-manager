@@ -660,7 +660,7 @@ def run_heartbeat_loop(
             return False
         if dl > cached_deadline + 1e-6:
             cached_deadline = dl
-            remaining = max(0.0, min(max_seconds, dl - now_wall_val))
+            remaining = max(0.0, min(resolve_max_hold_seconds(), dl - now_wall_val))
             turn_mono_deadline = now_mono_val + remaining
             return True
         if dl < cached_deadline - 1e-6:
