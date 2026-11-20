@@ -202,6 +202,18 @@ def decide(state: PolicyState) -> Action:
             "Running on battery with 'Only while plugged in' enabled; normal sleep is active.",
         )
 
+    # 4b. Unreadable battery while not confirmed on AC power -> fail safe.
+    if not state.on_ac_power and state.battery_percent is None:
+        if state.hold_active:
+            return Action(
+                ActionType.RELEASE,
+                "Released sleep hold: battery status is unreadable (failing safe).",
+            )
+        return Action(
+            ActionType.NOOP,
+            "Blocked new hold: battery status is unreadable (failing safe).",
+        )
+
     # 5. Maximum hold duration (default 2 hours = 7200 seconds).
     if hold_seconds >= settings.max_hold_seconds:
         max_mins = int(round(settings.max_hold_seconds / 60.0))

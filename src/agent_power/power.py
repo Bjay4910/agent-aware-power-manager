@@ -76,12 +76,18 @@ def parse_pmset_batt(output: str) -> BatteryStatus:
         parsed_pct = int(match.group(1))
         percent = max(0, min(100, parsed_pct))
 
+    has_batt_source = "'battery power'" in lower or "drawing from 'battery" in lower
+    has_ac_source = (
+        "'ac power'" in lower or "drawing from 'ac" in lower or "'ups power'" in lower
+    )
+
     if percent is None:
-        # No battery device/percentage line present (e.g. desktop Mac or restricted IOKit)
-        on_ac = True
-    elif "'battery power'" in lower or "drawing from 'battery" in lower:
+        # Only treat as AC-only desktop Mac when pmset explicitly reports AC/UPS Power.
+        # Empty, unreadable, or Battery Power without percentage must fail safe.
+        on_ac = has_ac_source and not has_batt_source
+    elif has_batt_source:
         on_ac = False
-    elif "'ac power'" in lower or "drawing from 'ac" in lower or "'ups power'" in lower:
+    elif has_ac_source:
         on_ac = True
     else:
         on_ac = "discharging" not in lower
@@ -109,10 +115,18 @@ def get_battery_status(runner: CommandRunner | None = None) -> BatteryStatus:
         proc = run([PMSET_BIN, "-g", "batt"])
     except (OSError, subprocess.SubprocessError) as exc:
         return BatteryStatus(
-            on_ac_power=True,
+            on_ac_power=False,
             percent=None,
             charging_state="unknown",
             raw_output=f"pmset error: {exc}",
+        )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or f"pmset exited {proc.returncode}").strip()
+        return BatteryStatus(
+            on_ac_power=False,
+            percent=None,
+            charging_state="unknown",
+            raw_output=detail,
         )
     return parse_pmset_batt(proc.stdout)
 
