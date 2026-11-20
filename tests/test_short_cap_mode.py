@@ -282,3 +282,168 @@ def test_short_cap_manual_hold_2h_returns_to_automatic_and_stays_released(
         assert tick.hold_active is False
         assert tick.mode is Mode.AUTOMATIC
     assert calls == [True, False]
+
+
+def test_cap_expired_latch_persists_across_restart_and_clears_on_idle_or_set_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_cap_expired_latch persists in state.json across restarts and clears when working presence ends or on set_mode."""
+    from agent_power.engine import load_state_file
+    from agent_power.power import PowerResult
+
+    monkeypatch.setenv(MAX_HOLD_SECONDS_ENV, "5")
+    clock = FakeClock(initial=1_760_000_000.0)
+    state_dir = tmp_path / "state"
+    room_dir = tmp_path / "room"
+    calls: list[bool] = []
+
+    def fake_disable_sleep(disable: bool, *, dry_run: bool | None = None) -> PowerResult:
+        calls.append(disable)
+        return PowerResult(ok=True, command=f"disablesleep {int(disable)}", dry_run=True)
+
+    # 1. Engine 1 acquires hold and hits the 5s cap
+    eng1 = PowerEngine(
+        state_dir=state_dir,
+        room_home=room_dir,
+        clock=clock,
+        battery_reader=_ac_battery,
+        disable_sleep_fn=fake_disable_sleep,
+        dry_run=True,
+    )
+    _write_working_presence(room_dir, clock.now)
+    assert eng1.step().action.kind is ActionType.HOLD
+    clock.advance(5.0)
+    _write_working_presence(room_dir, clock.now)
+    t_cap = eng1.step()
+    assert t_cap.action.kind is ActionType.RELEASE
+    assert load_state_file(state_dir).get("cap_expired_latch") is True
+    assert calls == [True, False]
+
+    # 2. Restart: new PowerEngine from the same state.json while same presence continues MUST stay released
+    eng2 = PowerEngine(
+        state_dir=state_dir,
+        room_home=room_dir,
+        clock=clock,
+        battery_reader=_ac_battery,
+        disable_sleep_fn=fake_disable_sleep,
+        dry_run=True,
+    )
+    clock.advance(5.0)
+    _write_working_presence(room_dir, clock.now)
+    t_after_restart = eng2.step()
+    assert t_after_restart.action.kind is ActionType.NOOP
+    assert t_after_restart.hold_active is False
+    assert calls == [True, False]
+
+    # 3. Working presence ends -> latch clears -> genuinely new turn can hold again
+    (room_dir / "presence" / "claude.json").unlink()
+    clock.advance(5.0)
+    assert eng2.step().hold_active is False
+    assert load_state_file(state_dir).get("cap_expired_latch") is False
+
+    clock.advance(5.0)
+    _write_working_presence(room_dir, clock.now)
+    assert eng2.step().action.kind is ActionType.HOLD
+    assert calls == [True, False, True]
+
+    # 4. Hit cap again, restart, then explicit set_mode(HOLD_2H) clears latch and acquires hold
+    clock.advance(5.0)
+    _write_working_presence(room_dir, clock.now)
+    assert eng2.step().action.kind is ActionType.RELEASE
+    assert load_state_file(state_dir).get("cap_expired_latch") is True
+
+    eng3 = PowerEngine(
+        state_dir=state_dir,
+        room_home=room_dir,
+        clock=clock,
+        battery_reader=_ac_battery,
+        disable_sleep_fn=fake_disable_sleep,
+        dry_run=True,
+    )
+    t_manual = eng3.set_mode(Mode.HOLD_2H)
+    assert t_manual.action.kind is ActionType.HOLD
+    assert t_manual.hold_active is True
+    assert load_state_file(state_dir).get("cap_expired_latch") is False
+
+
+def test_cli_status_is_readonly_and_never_invokes_pmset_or_writes_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`agent-power status` must be strictly read-only: no pmset calls, no state.json writes, no re-acquire after cap."""
+    from agent_power.cli import main
+    from agent_power.power import PowerResult
+
+    monkeypatch.setenv(MAX_HOLD_SECONDS_ENV, "5")
+    clock = FakeClock(initial=1_760_000_000.0)
+    state_dir = tmp_path / "state"
+    room_dir = tmp_path / "room"
+
+    def forbid_disable_sleep(disable: bool, *, dry_run: bool | None = None) -> PowerResult:
+        raise AssertionError("agent-power status must never invoke set_disable_sleep")
+
+    def forbid_sleep_now(*, release_first: bool = True, dry_run: bool | None = None) -> PowerResult:
+        raise AssertionError("agent-power status must never invoke sleep_now")
+
+    # Case A: Brand-new state with a working agent (would trigger HOLD if status called step())
+    _write_working_presence(room_dir, clock.now)
+    eng_fresh = PowerEngine(
+        state_dir=state_dir,
+        room_home=room_dir,
+        clock=clock,
+        battery_reader=_ac_battery,
+        disable_sleep_fn=forbid_disable_sleep,
+        sleep_now_fn=forbid_sleep_now,
+        dry_run=False,
+    )
+    assert main(["status"], engine=eng_fresh, state_dir=state_dir) == 0
+    out_a = capsys.readouterr().out
+    assert "Sleep hold active:      NO" in out_a
+    assert not (state_dir / "state.json").exists()
+    assert eng_fresh.hold_active is False
+
+    # Case B: Critical battery (5%) would trigger SLEEP_NOW if status acted on decision
+    eng_crit = PowerEngine(
+        state_dir=state_dir,
+        room_home=room_dir,
+        clock=clock,
+        battery_reader=lambda: BatteryStatus(on_ac_power=False, percent=5, charging_state="discharging"),
+        disable_sleep_fn=forbid_disable_sleep,
+        sleep_now_fn=forbid_sleep_now,
+        dry_run=False,
+    )
+    assert main(["status"], engine=eng_crit, state_dir=state_dir) == 0
+    out_b = capsys.readouterr().out
+    assert "SLEEP_NOW" in out_b
+    assert not (state_dir / "state.json").exists()
+
+    # Case C: After a real cap release, `agent-power status` does not re-acquire or touch state.json
+    eng_run = PowerEngine(
+        state_dir=state_dir,
+        room_home=room_dir,
+        clock=clock,
+        battery_reader=_ac_battery,
+        dry_run=True,
+    )
+    assert eng_run.step().action.kind is ActionType.HOLD
+    clock.advance(5.0)
+    _write_working_presence(room_dir, clock.now)
+    assert eng_run.step().action.kind is ActionType.RELEASE
+    state_before = (state_dir / "state.json").read_text(encoding="utf-8")
+
+    eng_status = PowerEngine(
+        state_dir=state_dir,
+        room_home=room_dir,
+        clock=clock,
+        battery_reader=_ac_battery,
+        disable_sleep_fn=forbid_disable_sleep,
+        sleep_now_fn=forbid_sleep_now,
+        dry_run=False,
+    )
+    assert main(["status"], engine=eng_status, state_dir=state_dir) == 0
+    out_c = capsys.readouterr().out
+    assert "Sleep hold active:      NO" in out_c
+    assert (state_dir / "state.json").read_text(encoding="utf-8") == state_before
+    assert eng_status.hold_active is False

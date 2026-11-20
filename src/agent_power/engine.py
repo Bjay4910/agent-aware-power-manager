@@ -175,6 +175,8 @@ class PowerEngine:
             )
         if isinstance(existing.get("hold_active"), bool):
             self.hold_active = existing["hold_active"]
+        if isinstance(existing.get("cap_expired_latch"), bool):
+            self._cap_expired_latch = existing["cap_expired_latch"]
         raw_hb = existing.get("heartbeat_epoch")
         if isinstance(raw_hb, (int, float)) and not isinstance(raw_hb, bool):
             self._max_wall_epoch = float(raw_hb)
@@ -401,6 +403,75 @@ class PowerEngine:
             events=list(self.events),
         )
 
+    def inspect(self) -> EngineTickResult:
+        """Read-only snapshot of presence, battery, and policy decision without side effects."""
+        now_epoch = self._clock()
+        now_mono = self._monotonic_clock()
+        now_dt = self._now_utc()
+
+        wall_jumped_back = (
+            self._max_wall_epoch is not None and now_epoch < self._max_wall_epoch
+        )
+        if wall_jumped_back:
+            all_presence = self._presence_reader(
+                self.room_home,
+                now=now_dt,
+                max_future_seconds=MAX_FUTURE_SKEW_SECONDS,
+            )
+        else:
+            all_presence = self._presence_reader(self.room_home, now=now_dt)
+        active = working_agents(all_presence)
+
+        battery = self._battery_reader()
+        agent_tuples = tuple((a.agent, a.task) for a in active)
+
+        if self.hold_active:
+            if self._hold_started_mono is not None:
+                hold_duration = max(0.0, now_mono - self._hold_started_mono)
+            elif self.hold_started_at is not None:
+                hold_duration = max(0.0, now_epoch - self.hold_started_at)
+            else:
+                hold_duration = 0.0
+        elif self._cap_expired_latch and active:
+            hold_duration = self.settings.max_hold_seconds
+        else:
+            hold_duration = 0.0
+
+        if self._last_working_mono is not None:
+            idle_duration: float | None = max(0.0, now_mono - self._last_working_mono)
+        elif self.last_working_at is not None:
+            idle_duration = max(0.0, now_epoch - self.last_working_at)
+        else:
+            idle_duration = None
+
+        policy_state = PolicyState(
+            any_agent_working=len(active) > 0,
+            active_agents=agent_tuples,
+            on_ac_power=battery.on_ac_power,
+            battery_percent=battery.percent,
+            hold_active=self.hold_active,
+            hold_duration_seconds=hold_duration,
+            idle_duration_seconds=idle_duration,
+            mode=self.mode,
+            sleep_now_requested=False,
+            settings=self.settings,
+            unreadable_battery_streak=self._unreadable_battery_streak,
+        )
+        decision = decide(policy_state)
+
+        return EngineTickResult(
+            action=decision,
+            power_result=None,
+            hold_active=self.hold_active,
+            icon_state=self.icon_state,
+            problem=self.problem,
+            battery=battery,
+            active_agents=active,
+            mode=self.mode,
+            only_while_plugged_in=self.settings.only_while_plugged_in,
+            events=list(self.events),
+        )
+
     def _write_state(
         self,
         *,
@@ -416,6 +487,7 @@ class PowerEngine:
             "pid": os.getpid(),
             "hold_active": self.hold_active,
             "hold_started_at": self.hold_started_at,
+            "cap_expired_latch": self._cap_expired_latch,
             "last_working_at": self.last_working_at,
             "mode": self.mode.value,
             "mode_label": self.mode.label,

@@ -132,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_status(engine: PowerEngine) -> int:
-    tick = engine.step()
+    tick = engine.inspect()
     batt = tick.battery
     source = "AC Power" if batt.on_ac_power else "Battery Power"
     pct_str = f"{batt.percent}%" if batt.percent is not None else "n/a"
