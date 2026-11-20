@@ -142,3 +142,38 @@ def test_short_cap_env_applies_to_hook_presence_deadline(
     data = json.loads(p_file.read_text(encoding="utf-8"))
     delta = data["max_deadline_epoch"] - data["turn_started_at"]
     assert delta == pytest.approx(8.0, abs=0.01)
+
+
+@pytest.mark.parametrize("over_limit", ["7200.1", "7201", "14400", "86400"])
+def test_max_hold_env_above_7200_clamps_to_7200(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    over_limit: str,
+) -> None:
+    """AGENT_POWER_MAX_HOLD_SECONDS may only shorten the cap; values above 7200s clamp to 7200s."""
+    monkeypatch.setenv(MAX_HOLD_SECONDS_ENV, over_limit)
+
+    assert resolve_max_hold_seconds() == 7200.0
+    assert PolicySettings.from_env().max_hold_seconds == 7200.0
+
+    eng = PowerEngine(
+        state_dir=tmp_path / "state",
+        room_home=tmp_path / "room",
+        battery_reader=_ac_battery,
+        dry_run=True,
+    )
+    assert eng.settings.max_hold_seconds == 7200.0
+
+    room_dir = tmp_path / "room"
+    payload = json.dumps(
+        {
+            "conversationId": f"clamp-{over_limit}",
+            "hookEventName": "PreInvocation",
+            "cwd": "/tmp/clamp",
+        }
+    )
+    assert handle_hook_event(payload, room_home=room_dir, spawn_heartbeat=False) == {}
+    p_file = room_dir / "presence" / f"agy-clamp-{over_limit}.json"
+    data = json.loads(p_file.read_text(encoding="utf-8"))
+    delta = data["max_deadline_epoch"] - data["turn_started_at"]
+    assert delta == pytest.approx(7200.0, abs=0.01)

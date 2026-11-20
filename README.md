@@ -110,7 +110,7 @@ agent-power guard-run               # Run the runaway script guard check once
 agent-power guard-status            # Inspect tracked background scripts and guard log
 ```
 
-Set `AGENT_POWER_DRY_RUN=1` to test any command without root or real `pmset` changes (prints the `pmset` commands instead of running them). Set `AGENT_POWER_MAX_HOLD_SECONDS=<seconds>` to override the 2-hour (7200s) hold cap for short-timeout testing (unset or invalid values keep the 7200s default).
+Set `AGENT_POWER_DRY_RUN=1` to test any command without root or real `pmset` changes (prints the `pmset` commands instead of running them). Set `AGENT_POWER_MAX_HOLD_SECONDS=<seconds>` to shorten the 2-hour (7200s) hold cap for short-timeout testing (clamped to a maximum of 7200s; unset or invalid values keep the 7200s default).
 
 ## Manual Installation & Uninstallation
 
@@ -152,7 +152,7 @@ python3 -m venv .venv
 - **Lid-closed with lifecycle hooks (plugged in, one run):** On my MacBook Pro, a real Claude Code session started a 4-minute background command (a loop writing a timestamp every 5 seconds to a log) and ended its turn. I closed the lid; the log had 48 entries with no gap over 8 seconds, and `SleepDisabled` was `0` afterwards. One run only.
 - **Lid-closed with lifecycle hooks (on battery, one run):** On my MacBook Pro, unplugged with **"Only while plugged in"** unticked (battery at 62% at the end), the same 4-minute timestamp-loop test produced 48 entries with no gaps, and `SleepDisabled` was back to `0` about a minute after the command finished. One run only (no battery drain numbers or longer durations verified).
 - **Antigravity desktop IDE hooks (Nov 20, 2026, ~3:37–3:38 AM, one run):** Verified on my MacBook Pro that the Antigravity desktop IDE fired the same lifecycle hooks: an `agy-<id>.json` presence file appeared, `SleepDisabled` became `1`, and it released back to `0` afterward. Desktop IDE chats are not captured by the room (`antigravity:outside-brain`; belongs to `multi-agent-memory-hub`).
-- **Automated fixture & fake-clock tests (not real battery drain or real-time clock shifts):** Battery thresholds (`<=10%` forced sleep, `<25%` new holds refused, `26–100%` holds allowed, AC vs battery, and fail-safe on unreadable `pmset -g batt`), clock edge cases (DST spring-forward/fall-back, backwards wall-clock jumps, midnight crossings, 2-hour monotonic cap, and 120s stale presence expiry), and `AGENT_POWER_MAX_HOLD_SECONDS` (default 7200s) are covered in `tests/`.
+- **Automated fixture & fake-clock tests (not real battery drain or real-time clock shifts):** Battery thresholds (`<=10%` forced sleep, below 25% new holds refused, 25–100% holds allowed, AC vs battery, and fail-safe on unreadable `pmset -g batt`), clock edge cases (DST spring-forward/fall-back, backwards wall-clock jumps, midnight crossings, 2-hour monotonic cap, and 120s stale presence expiry), and `AGENT_POWER_MAX_HOLD_SECONDS` (default 7200s, clamped to <=7200s) are covered in `tests/`.
 - **Not yet tested:**
   - Full 2-hour cap in real time (verified with fake clocks and `AGENT_POWER_MAX_HOLD_SECONDS` in automated tests)
   - Other Mac models

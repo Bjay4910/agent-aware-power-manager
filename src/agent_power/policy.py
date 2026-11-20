@@ -18,6 +18,7 @@ MAX_HOLD_SECONDS_ENV: str = "AGENT_POWER_MAX_HOLD_SECONDS"
 def resolve_max_hold_seconds(explicit: float | None = None) -> float:
     """Resolve maximum hold duration from an explicit value or AGENT_POWER_MAX_HOLD_SECONDS.
 
+    AGENT_POWER_MAX_HOLD_SECONDS may only shorten the cap (clamped to <= 7200.0s).
     Falls back to DEFAULT_MAX_HOLD_SECONDS (7200.0 = 2 hours) when unset or invalid.
     """
     if explicit is not None:
@@ -31,7 +32,7 @@ def resolve_max_hold_seconds(explicit: float | None = None) -> float:
         return DEFAULT_MAX_HOLD_SECONDS
     if not math.isfinite(parsed) or parsed <= 0.0:
         return DEFAULT_MAX_HOLD_SECONDS
-    return parsed
+    return min(parsed, DEFAULT_MAX_HOLD_SECONDS)
 
 
 class ActionType(StrEnum):
