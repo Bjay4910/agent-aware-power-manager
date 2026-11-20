@@ -220,7 +220,10 @@ def test_wall_clock_moving_backwards_still_enforces_2h_cap_and_idle_grace(tmp_pa
     assert t_cap.action.kind is ActionType.RELEASE
     assert t_cap.hold_active is False
 
-    # Re-acquire a new hold, then let agent go stale (>120s) and jump wall clock backwards during idle grace
+    # End prior capped turn (idle), then start a genuinely new turn for the idle-grace check
+    _write_presence_iso(room_dir, "claude", datetime.fromtimestamp(wall.now, tz=timezone.utc).isoformat(), status="idle")
+    assert eng.step().hold_active is False
+
     wall.advance(10.0)
     mono.advance(10.0)
     _write_presence_iso(room_dir, "claude", datetime.fromtimestamp(wall.now, tz=timezone.utc).isoformat())

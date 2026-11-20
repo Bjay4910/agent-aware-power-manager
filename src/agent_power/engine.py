@@ -128,6 +128,7 @@ class PowerEngine:
         self._hold_started_mono: float | None = None
         self._last_working_mono: float | None = None
         self._unreadable_battery_streak: int = 0
+        self._cap_expired_latch: bool = False
         self.menubar_icon_visible: bool | None = None
         self.menubar_icon_checked_at: float | None = None
         self.problem: str | None = None
@@ -220,6 +221,7 @@ class PowerEngine:
     def set_mode(self, mode: Mode | str) -> EngineTickResult:
         """Switch mode (Automatic, Hold 2 hours, Off) and immediately evaluate policy."""
         new_mode = Mode.from_str(mode)
+        self._cap_expired_latch = False
         if new_mode is not self.mode:
             self.mode = new_mode
             if new_mode is Mode.HOLD_2H and not self.hold_active:
@@ -258,6 +260,8 @@ class PowerEngine:
         if active:
             self.last_working_at = now_epoch
             self._last_working_mono = now_mono
+        else:
+            self._cap_expired_latch = False
 
         battery = self._battery_reader()
         if not battery.on_ac_power and battery.percent is None:
@@ -276,8 +280,12 @@ class PowerEngine:
                 hold_duration = max(0.0, now_epoch - self.hold_started_at)
             else:
                 hold_duration = 0.0
+        elif self._cap_expired_latch:
+            hold_duration = self.settings.max_hold_seconds
         else:
             hold_duration = 0.0
+
+        cap_reached = self.hold_active and hold_duration >= self.settings.max_hold_seconds
 
         if self._last_working_mono is not None:
             idle_duration: float | None = max(0.0, now_mono - self._last_working_mono)
@@ -321,6 +329,10 @@ class PowerEngine:
                 self.hold_active = False
                 self.hold_started_at = None
                 self._hold_started_mono = None
+                if cap_reached:
+                    self._cap_expired_latch = True
+                    if self.mode is Mode.HOLD_2H:
+                        self.mode = Mode.AUTOMATIC
                 self.problem = None
                 self.record_event(decision.reason)
             else:

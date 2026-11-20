@@ -177,3 +177,108 @@ def test_max_hold_env_above_7200_clamps_to_7200(
     data = json.loads(p_file.read_text(encoding="utf-8"))
     delta = data["max_deadline_epoch"] - data["turn_started_at"]
     assert delta == pytest.approx(7200.0, abs=0.01)
+
+
+def test_short_cap_does_not_reacquire_from_same_working_presence_until_new_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After cap release, subsequent steps stay released until working presence ends and a new turn starts."""
+    monkeypatch.setenv(MAX_HOLD_SECONDS_ENV, "5")
+
+    clock = FakeClock(initial=1_760_000_000.0)
+    room_dir = tmp_path / "room"
+    calls: list[bool] = []
+
+    from agent_power.power import PowerResult
+
+    def fake_disable_sleep(disable: bool, *, dry_run: bool | None = None) -> PowerResult:
+        calls.append(disable)
+        return PowerResult(ok=True, command=f"disablesleep {int(disable)}", dry_run=True)
+
+    eng = PowerEngine(
+        state_dir=tmp_path / "state",
+        room_home=room_dir,
+        clock=clock,
+        battery_reader=_ac_battery,
+        disable_sleep_fn=fake_disable_sleep,
+        dry_run=True,
+    )
+
+    # 1. Acquire hold in Automatic mode and hit the 5s cap
+    _write_working_presence(room_dir, clock.now)
+    assert eng.step().action.kind is ActionType.HOLD
+    assert calls == [True]
+
+    clock.advance(5.0)
+    _write_working_presence(room_dir, clock.now)
+    t_cap = eng.step()
+    assert t_cap.action.kind is ActionType.RELEASE
+    assert t_cap.hold_active is False
+    assert calls == [True, False]
+
+    # 2. Several subsequent step() calls with the SAME still-working presence MUST stay released
+    for _ in range(4):
+        clock.advance(5.0)
+        _write_working_presence(room_dir, clock.now)
+        tick = eng.step()
+        assert tick.action.kind is ActionType.NOOP
+        assert tick.hold_active is False
+    assert calls == [True, False]  # SleepDisabled stayed 0; never re-acquired!
+
+    # 3. Working presence ends (idle / removed) -> latch clears; then a genuinely new turn CAN hold again
+    (room_dir / "presence" / "claude.json").unlink()
+    clock.advance(5.0)
+    t_idle = eng.step()
+    assert t_idle.hold_active is False
+
+    clock.advance(5.0)
+    _write_working_presence(room_dir, clock.now)
+    t_new_turn = eng.step()
+    assert t_new_turn.action.kind is ActionType.HOLD
+    assert t_new_turn.hold_active is True
+    assert calls == [True, False, True]
+
+
+def test_short_cap_manual_hold_2h_returns_to_automatic_and_stays_released(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When Mode.HOLD_2H expires at the cap, mode returns to Automatic and subsequent steps stay released."""
+    monkeypatch.setenv(MAX_HOLD_SECONDS_ENV, "5")
+
+    clock = FakeClock(initial=1_760_000_000.0)
+    room_dir = tmp_path / "room"
+    calls: list[bool] = []
+
+    from agent_power.power import PowerResult
+
+    def fake_disable_sleep(disable: bool, *, dry_run: bool | None = None) -> PowerResult:
+        calls.append(disable)
+        return PowerResult(ok=True, command=f"disablesleep {int(disable)}", dry_run=True)
+
+    eng = PowerEngine(
+        state_dir=tmp_path / "state",
+        room_home=room_dir,
+        clock=clock,
+        battery_reader=_ac_battery,
+        disable_sleep_fn=fake_disable_sleep,
+        dry_run=True,
+    )
+
+    assert eng.set_mode(Mode.HOLD_2H).action.kind is ActionType.HOLD
+    assert eng.mode is Mode.HOLD_2H
+
+    clock.advance(5.0)
+    t_cap = eng.step()
+    assert t_cap.action.kind is ActionType.RELEASE
+    assert t_cap.hold_active is False
+    assert eng.mode is Mode.AUTOMATIC
+
+    # Several subsequent ticks stay released and in Automatic mode
+    for _ in range(3):
+        clock.advance(5.0)
+        tick = eng.step()
+        assert tick.hold_active is False
+        assert tick.mode is Mode.AUTOMATIC
+    assert calls == [True, False]
