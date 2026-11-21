@@ -23,7 +23,6 @@ A headless `agy -p` run registered no working agent over about 17 minutes of idl
 
 ## Still Not Tested
 
-- A full 7200s cap in real time
 - Real battery drain below 25%
 - Other Mac models
 - Real DST transitions
@@ -65,4 +64,46 @@ Copied verbatim from the 5-second sampler log (`...` marks omitted lines):
 2026-11-20 12:10:25 | SleepDisabled=1 | latch=False | Sleep hold active=YES (disablesleep=1) | Decision=NOOP — All agents idle; waiting 1s more before releasing sleep hold. | Working agents=none | 
 2026-11-20 12:10:31 | SleepDisabled=1 | latch=False | Sleep hold active=YES (disablesleep=1) | Decision=RELEASE — Released sleep hold | Working agents=none | 
 2026-11-20 12:10:36 | SleepDisabled=0 | latch=False | Sleep hold active=NO (disablesleep=0) | Decision=NOOP — No agents working; normal macOS sleep is active. | Working agents=none | 
+```
+
+## 2-hour run
+
+### Setup
+
+- **Date:** Nov 20, 2026
+- **Hardware & power:** MacBook Pro on AC power, battery 66%, lid open
+- **Cap configuration:** Default cap 7200s (no `AGENT_POWER_MAX_HOLD_SECONDS`)
+- **Workload:** Interactive Antigravity `agy --mode auto` running one foreground `sleep 7500`
+- **Observation:** Sampler logging every 5s
+
+### Timeline
+
+- **20:21:03** — Hold first observed (`SleepDisabled=1`, one working agent).
+- **22:21:02** — Hold released (7199s later under 5s sampling); `latch=True` at **22:21:02**, `latch=False` at **22:21:07**. At 22:21:02 `Working agents` already shows `none`: the heartbeat's own 7200s limit (`hooks.py` `run_heartbeat_loop`) clears presence at the same moment, so this run exercised the heartbeat limit; the latch with live presence was exercised in the 180s run above.
+- **22:21:07 to ~22:26:10** — No hold while the command was still running.
+- **22:26:15** — A hold appeared again (after `Decision=HOLD` at 22:26:10), with the 15s grace countdown; released at **22:26:36–22:26:41** (about 21s; total about 26s). Cause not confirmed — likely an end-of-command hook event in the same turn.
+- **Sleep note** — The sampler records `SleepDisabled`, not whether the Mac actually slept; YouTube was playing, so no claim is made that the Mac slept.
+
+### Sampler Log Excerpts
+
+Copied verbatim from the 5-second sampler log (`20:20:58–20:21:13`, `22:20:57–22:21:12`, `22:26:10–22:26:41`; `...` marks omitted lines):
+
+```text
+2026-11-20 20:20:58 | SleepDisabled=0 | latch=False | Sleep hold active=NO (disablesleep=0) | Decision=NOOP — No agents working; normal macOS sleep is active. | Working agents=none | 
+2026-11-20 20:21:03 | SleepDisabled=1 | latch=False | Sleep hold active=YES (disablesleep=1) | Decision=NOOP — Keeping Mac awake | Working agents (1):= | 
+2026-11-20 20:21:08 | SleepDisabled=1 | latch=False | Sleep hold active=YES (disablesleep=1) | Decision=NOOP — Keeping Mac awake | Working agents (1):= | 
+2026-11-20 20:21:13 | SleepDisabled=1 | latch=False | Sleep hold active=YES (disablesleep=1) | Decision=NOOP — Keeping Mac awake | Working agents (1):= | 
+...
+2026-11-20 22:20:57 | SleepDisabled=1 | latch=False | Sleep hold active=YES (disablesleep=1) | Decision=NOOP — Keeping Mac awake | Working agents (1):= | 
+2026-11-20 22:21:02 | SleepDisabled=0 | latch=True | Sleep hold active=NO (disablesleep=0) | Decision=NOOP — No agents working; normal macOS sleep is active. | Working agents=none | 
+2026-11-20 22:21:07 | SleepDisabled=0 | latch=False | Sleep hold active=NO (disablesleep=0) | Decision=NOOP — No agents working; normal macOS sleep is active. | Working agents=none | 
+2026-11-20 22:21:12 | SleepDisabled=0 | latch=False | Sleep hold active=NO (disablesleep=0) | Decision=NOOP — No agents working; normal macOS sleep is active. | Working agents=none | 
+...
+2026-11-20 22:26:10 | SleepDisabled=0 | latch=False | Sleep hold active=NO (disablesleep=0) | Decision=HOLD — Kept awake | Working agents (1):= | 
+2026-11-20 22:26:15 | SleepDisabled=1 | latch=False | Sleep hold active=YES (disablesleep=1) | Decision=NOOP — All agents idle; waiting 15s more before releasing sleep hold. | Working agents=none | 
+2026-11-20 22:26:20 | SleepDisabled=1 | latch=False | Sleep hold active=YES (disablesleep=1) | Decision=NOOP — All agents idle; waiting 10s more before releasing sleep hold. | Working agents=none | 
+2026-11-20 22:26:26 | SleepDisabled=1 | latch=False | Sleep hold active=YES (disablesleep=1) | Decision=NOOP — All agents idle; waiting 5s more before releasing sleep hold. | Working agents=none | 
+2026-11-20 22:26:31 | SleepDisabled=1 | latch=False | Sleep hold active=YES (disablesleep=1) | Decision=NOOP — All agents idle; waiting 1s more before releasing sleep hold. | Working agents=none | 
+2026-11-20 22:26:36 | SleepDisabled=1 | latch=False | Sleep hold active=NO (disablesleep=0) | Decision=NOOP — No agents working; normal macOS sleep is active. | Working agents=none | 
+2026-11-20 22:26:41 | SleepDisabled=0 | latch=False | Sleep hold active=NO (disablesleep=0) | Decision=NOOP — No agents working; normal macOS sleep is active. | Working agents=none | 
 ```
