@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Power Manager</title>
+<meta name="description" content="A macOS menu bar app that keeps a MacBook awake with the lid closed while a coding agent is working, then releases the hold shortly after the agent finishes.">
+<style>
+  :root { color-scheme: dark; --bg:#0e0f11; --fg:#e6e6e6; --muted:#9a9ea6; --line:#24272c; --link:#8ab4f8; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 880px; margin: 0 auto; padding: 48px 16px 64px; }
+  h1 { font-size: 2rem; line-height:1.2; margin: 0 0 8px; letter-spacing:-0.01em; }
+  .lede { color: var(--muted); margin: 0 0 28px; font-size: 1.05rem; }
+  video { display:block; width:100%; height:auto; border:1px solid var(--line); border-radius:10px; background:#000; }
+  h2 { font-size: 1.1rem; margin: 36px 0 8px; }
+  ul { padding-left: 1.2em; margin: 0; }
+  li { margin: 4px 0; }
+  a { color: var(--link); }
+  footer { margin-top: 40px; padding-top: 16px; border-top:1px solid var(--line); color:var(--muted); font-size:0.95rem; }
+  footer a { margin-right: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Agent Power Manager</h1>
+  <p class="lede">A macOS menu bar app that keeps a MacBook awake with the lid closed while a coding agent is working, then releases the hold shortly after the agent finishes.</p>
+
+  <video controls muted playsinline preload="metadata" poster="demo/poster.jpg">
+    <source src="demo/power-manager-demo.mp4" type="video/mp4">
+    Your browser cannot play this video. <a href="demo/power-manager-demo.mp4">Download the MP4</a>.
+  </video>
+
+  <h2>What the demo shows</h2>
+  <ul>
+    <li>The menu bar app and its menu.</li>
+    <li>A live hold and release: the icon changes between awake (⚡) and normal (🌙).</li>
+    <li>The 2-hour cap, from a real logged run (the logged run shown used a 180-second cap).</li>
+    <li>The 25% battery floor, shown through automated tests.</li>
+  </ul>
+
+  <h2>Limits</h2>
+  <ul>
+    <li>The battery floor is tested with fixtures, not real battery drain. Real battery drain below 25% is not yet tested.</li>
+    <li>Real-hardware results come from one MacBook Pro. Other Mac models are not yet tested.</li>
+  </ul>
+
+  <footer>
+    <a href="https://github.com/Bjay4910/agent-aware-power-manager">GitHub repository</a>
+    <a href="https://github.com/Bjay4910/agent-aware-power-manager#readme">README</a>
+  </footer>
+</main>
+</body>
+</html>

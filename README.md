@@ -1,5 +1,7 @@
 # agent-aware-power-manager
 
+[Watch the demo](https://bjay4910.github.io/agent-aware-power-manager/)
+
 A macOS menu-bar power manager that keeps your Mac awake with the lid closed while any AI agent in your [`multi-agent-memory-hub`](https://github.com/Bjay4910/multi-agent-memory-hub) room is working, and lets macOS sleep normally once they finish.
 
 ## The Three Rules
